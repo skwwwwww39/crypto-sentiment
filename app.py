@@ -44,6 +44,10 @@ st.markdown("""
         padding: 12px 25px;
         border-radius: 4px;
         width: 100%;
+        transition: 0.3s;
+    }
+    .stButton > button:hover {
+        box-shadow: 0 0 15px #bd00ff;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -117,23 +121,25 @@ def get_real_market_news(limit=25):
         st.error(f"API Error: {e}")
         return []
 
-# --- 4. Analytics Modules (Robust Parsing) ---
+# --- 4. Analytics Modules (Robust Fuzzy Parsing) ---
 
 def analyze_sentiment(news_list):
     if not news_list: return []
     results = []
+    
+    # バッチサイズを小さくして確実に処理
     batch_size = 10
     
     for i in range(0, len(news_list), batch_size):
         batch = news_list[i:i+batch_size]
         news_block = "\n".join([f"ID {item['id']}: {item['text']}" for item in batch])
         
+        # 指示をシンプルに
         prompt = f"""
-        Analyze sentiment of these {len(batch)} crypto headlines.
-        Return ONLY a list in format: ID|Label|Score
-        Label: [Euphoria, Optimism, Positive, Neutral, Negative, Fear, Despair]
+        Analyze sentiment for these crypto news.
+        Format per line: ID | Label | Score
+        Label: Positive, Negative, Neutral
         Score: -100 to 100
-        NO Markdown. NO bolding.
         
         Headlines:
         {news_block}
@@ -142,26 +148,32 @@ def analyze_sentiment(news_list):
             res = model.generate_content(prompt)
             if not res.text: continue
             
-            # ★修正点：正規表現をやめて、泥臭くパースする（データ消失防止）
+            # ★修正：泥臭くても確実にデータを拾うパース処理
             lines = res.text.strip().split("\n")
             for line in lines:
+                # パイプ | で分割
                 parts = line.split("|")
                 if len(parts) >= 3:
                     try:
-                        # 余計な文字（*やスペース）を削除して読み込む
-                        nid_str = re.sub(r'\D', '', parts[0]) # 数字以外消す
+                        # 1. IDの抽出 (数字以外を削除)
+                        raw_id = parts[0].strip()
+                        nid_str = "".join(filter(str.isdigit, raw_id))
                         if not nid_str: continue
                         nid = int(nid_str)
                         
-                        label = parts[1].strip().replace("*", "")
+                        # 2. ラベル (余計な記号削除)
+                        label = parts[1].strip().replace("*", "").replace("`", "")
                         
-                        score_str = parts[2].strip().replace("*", "")
-                        score = int(float(score_str)) # "90.0" とか来てもいいように
-                        
-                        # IDで紐付け
+                        # 3. スコア (数字とマイナス記号以外削除)
+                        raw_score = parts[2].strip()
+                        # 数字またはマイナス符号だけ抽出
+                        score_match = re.search(r'-?\d+', raw_score)
+                        if not score_match: continue
+                        score = int(score_match.group())
+
+                        # 元データと結合
                         for item in news_list:
                             if item['id'] == nid:
-                                # 新しい辞書を作って追加（安全策）
                                 new_item = item.copy()
                                 new_item['Label'] = label
                                 new_item['Score'] = score
@@ -169,9 +181,9 @@ def analyze_sentiment(news_list):
                                 break
                     except:
                         continue
-        except Exception as e:
-            print(f"Batch Error: {e}")
+        except:
             continue
+            
     return results
 
 def extract_keywords(df):
@@ -196,13 +208,12 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
         df = pd.DataFrame()
         if raw_news:
             analyzed_data = analyze_sentiment(raw_news)
-            # データが取れなかった場合（解析失敗時）は生データを表示
             if analyzed_data:
                 df = pd.DataFrame(analyzed_data)
             else:
                 df = pd.DataFrame(raw_news)
-                st.warning("Sentiment analysis unavailable. Displaying raw feed.")
-
+                st.warning("Could not analyze sentiment. Showing raw news.")
+        
     # --- LAYOUT ---
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -233,25 +244,61 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
             st.plotly_chart(fig, use_container_width=True)
 
     with c_right:
-        st.subheader("🌊 Sentiment Flow")
-        # ★★★ グラフ修正の核心：時間統合とソート ★★★
-        if not df.empty and 'Score' in df.columns and 'timestamp' in df.columns:
-            chart_df = df.copy()
-            chart_df['timestamp'] = pd.to_datetime(chart_df['timestamp'])
+        st.subheader("🌊 Sentiment Gauge / Trend")
+        
+        # ★★★ グラフ修正：データが少ない場合はゲージ、多い場合はトレンド ★★★
+        if not df.empty and 'Score' in df.columns:
+            # 1. ゲージチャート（現在の総合スコア）
+            avg_score = df['Score'].mean()
             
-            # 1. 同じ時間のデータを平均化して「1つの点」にする（ループ回避）
-            chart_df = chart_df.groupby('timestamp', as_index=False)['Score'].mean()
+            fig_gauge = go.Figure(go.Indicator(
+                mode = "gauge+number",
+                value = avg_score,
+                domain = {'x': [0, 1], 'y': [0, 1]},
+                title = {'text': "Current Mood"},
+                gauge = {
+                    'axis': {'range': [-100, 100], 'tickwidth': 1, 'tickcolor': "white"},
+                    'bar': {'color': "#00ff99" if avg_score > 0 else "#ff0055"},
+                    'bgcolor': "rgba(0,0,0,0)",
+                    'borderwidth': 2,
+                    'bordercolor': "#333",
+                    'steps': [
+                        {'range': [-100, -20], 'color': 'rgba(255, 0, 85, 0.3)'},
+                        {'range': [-20, 20], 'color': 'rgba(189, 0, 255, 0.3)'},
+                        {'range': [20, 100], 'color': 'rgba(0, 255, 153, 0.3)'}],
+                }
+            ))
+            fig_gauge.update_layout(paper_bgcolor='rgba(0,0,0,0)', font={'color': "white", 'family': "Arial"}, height=350, margin=dict(l=20,r=20,t=50,b=20))
             
-            # 2. 時間順にソート（逆行回避）
-            chart_df = chart_df.sort_values('timestamp')
+            # タブ切り替えで詳細トレンドも見れるようにする
+            tab1, tab2 = st.tabs(["⚡ Gauge", "🌊 Trend Line"])
             
-            # 3. 直線で描画
-            fig = px.line(chart_df, x='timestamp', y='Score')
-            fig.update_traces(line_color='#00ff99', line_shape='linear', fill='tozeroy', fillcolor='rgba(0,255,153,0.1)')
-            fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color='#888'), margin=dict(l=0,r=0,t=0,b=0), height=350, xaxis=dict(showgrid=False), yaxis=dict(range=[-100,100], gridcolor='rgba(255,255,255,0.1)'))
-            st.plotly_chart(fig, use_container_width=True)
+            with tab1:
+                st.plotly_chart(fig_gauge, use_container_width=True)
+                
+            with tab2:
+                # ★★★ トレンドライン修正：時間集計してソート ★★★
+                if 'timestamp' in df.columns:
+                    chart_df = df.copy()
+                    chart_df['timestamp'] = pd.to_datetime(chart_df['timestamp'])
+                    
+                    # 同じ時間のデータを平均してまとめる（重複排除）
+                    chart_df = chart_df.groupby('timestamp', as_index=False)['Score'].mean()
+                    # 完全に時間順にソート（逆行防止）
+                    chart_df = chart_df.sort_values('timestamp')
+                    
+                    if len(chart_df) > 1:
+                        fig_line = px.line(chart_df, x='timestamp', y='Score', markers=True)
+                        fig_line.update_traces(line_color='#00e5ff', line_shape='linear') # linearで直線化
+                        fig_line.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color='#888'), height=300, margin=dict(l=0,r=0,t=0,b=0), yaxis=dict(range=[-100,100]))
+                        st.plotly_chart(fig_line, use_container_width=True)
+                    else:
+                        st.info("Not enough time points for a trend line.")
+                else:
+                    st.info("No timestamp data.")
+                    
         else:
-            st.info("No data for chart.")
+            st.info("No sentiment data.")
 
     # --- ANALYSIS ---
     c_kw, c_pie = st.columns(2)
@@ -268,7 +315,7 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
     with c_pie:
         st.subheader("🥧 Emotions")
         if not df.empty and 'Label' in df.columns:
-            cmap = {'Euphoria': '#00FF99', 'Optimism': '#00e5ff', 'Positive': '#3498DB', 'Neutral': '#555', 'Negative': '#F1C40F', 'Fear': '#ff5e00', 'Despair': '#ff0055'}
+            cmap = {'Positive': '#00FF99', 'Neutral': '#bd00ff', 'Negative': '#ff0055'} # シンプル化
             fig = px.pie(df, names='Label', hole=0.6, color='Label', color_discrete_map=cmap)
             fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', font_color='#e0e0e0', height=300, margin=dict(t=0,b=0))
             st.plotly_chart(fig, use_container_width=True)
@@ -280,7 +327,7 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
         for _, row in df_log.iterrows():
             sc = row.get('Score', 0)
             c = "#00ff99" if sc > 0 else "#ff0055" if sc < 0 else "#888"
-            st.markdown(f"<div style='border-left:3px solid {c}; padding-left:10px; margin-bottom:5px; background:rgba(255,255,255,0.02)'><div>{row['date_str']} | {row['source']}</div><div style='display:flex; justify-content:space-between'><a href='{row['link']}' style='color:#eee; text-decoration:none'>{row['text']}</a><span style='color:{c}'>{row.get('Label','-')} ({sc})</span></div></div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='border-left:3px solid {c}; padding-left:10px; margin-bottom:5px; background:rgba(255,255,255,0.02)'><div>{row.get('date_str','')} | {row.get('source','')}</div><div style='display:flex; justify-content:space-between'><a href='{row['link']}' style='color:#eee; text-decoration:none'>{row['text']}</a><span style='color:{c}'>{row.get('Label','-')} ({sc})</span></div></div>", unsafe_allow_html=True)
 
 else:
     st.markdown("<div style='text-align:center; padding:50px;'><h1>READY</h1><p>Click REFRESH</p></div>", unsafe_allow_html=True)
