@@ -1,28 +1,29 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import numpy as np
+import plotly.express as px
 
 # --- 1. Cyberpunk Design System ---
-st.set_page_config(page_title="The Smart Switch: CFD vs Prop", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="The Reality Check", layout="wide", page_icon="👁️")
 
 st.markdown("""
 <style>
     /* 全体設定 */
     .stApp {
         background-color: #050505;
-        background-image: radial-gradient(circle at 50% 0%, #0d1b2a 0%, #000000 80%);
+        background-image: radial-gradient(circle at 50% 0%, #1a0b2e 0%, #000000 80%);
         color: #e0e0e0;
     }
     
     /* 入力エリア */
+    .stNumberInput > div > div > input { background-color: #111; color: #fff; border: 1px solid #333; }
     .stSlider > div > div > div > div { background-color: #bd00ff; }
     
     /* カードデザイン */
     .glass-card {
         background: rgba(255, 255, 255, 0.05);
         backdrop-filter: blur(10px);
-        border: 1px solid rgba(189, 0, 255, 0.2);
+        border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 16px;
         padding: 25px;
         margin-bottom: 20px;
@@ -34,20 +35,25 @@ st.markdown("""
         justify-content: center;
     }
     
-    .winner-card { border: 2px solid #00ff99; box-shadow: 0 0 20px rgba(0, 255, 153, 0.2); }
-    .loser-card { border: 1px solid #ff0055; opacity: 0.8; }
-    
     .kpi-label { font-size: 0.8rem; color: #aaa; text-transform: uppercase; letter-spacing: 1px; }
-    .kpi-value { font-size: 2.0rem; font-weight: 800; color: #fff; }
-    .kpi-sub { font-size: 0.9rem; margin-top: 5px; color: #ccc; }
+    .kpi-value { font-size: 2.2rem; font-weight: 800; color: #fff; }
     
-    /* 危険ゾーン */
-    .danger-zone {
-        background: rgba(255, 0, 85, 0.05);
-        border: 1px solid #ff0055;
+    /* 警告ボックス */
+    .wake-up-call {
+        background: rgba(255, 0, 85, 0.1);
+        border-left: 5px solid #ff0055;
         padding: 20px;
-        border-radius: 10px;
         margin-top: 20px;
+        border-radius: 5px;
+    }
+    
+    /* 教育ボックス */
+    .education-box {
+        background: rgba(0, 255, 153, 0.1);
+        border-left: 5px solid #00ff99;
+        padding: 20px;
+        margin-top: 20px;
+        border-radius: 5px;
     }
 
     /* ボタン */
@@ -72,187 +78,178 @@ st.markdown("""
 
 # --- 2. Simulation Logic ---
 
-def run_simulation(budget, monthly_roi, failures, prop_acc_size, prop_fee):
-    # A. CFD Personal Account (High Leverage / Own Risk)
-    personal_data = []
-    personal_balance = budget
+def analyze_reality(deposit_count, deposit_avg, withdraw_count, withdraw_avg, prop_fee):
+    """
+    現状分析と未来予測
+    """
+    # 現状 (過去1年)
+    total_deposit = deposit_count * deposit_avg
+    total_withdraw = withdraw_count * withdraw_avg
+    net_pnl = total_withdraw - total_deposit
     
-    # B. Prop Firm (SuperFunded)
-    prop_data = []
-    # 失敗回数分のコスト + 合格時のコスト
-    total_cost = prop_fee * (1 + failures)
-    prop_balance = -total_cost # スタートはマイナス（投資コスト）
+    withdrawal_rate = (withdraw_count / deposit_count * 100) if deposit_count > 0 else 0
+    return_rate = (total_withdraw / total_deposit * 100) if total_deposit > 0 else 0
     
-    # 評価期間の遅延 (1回失敗につき1ヶ月 + 合格時2ヶ月の無給期間と仮定)
-    months_delayed = failures + 2
+    # 3年後の予測 (現状維持の場合)
+    # ほとんどの負けトレーダーは「取り返そう」として入金ペースが加速するが、ここでは一定とする
+    future_loss_3y = abs(net_pnl * 3) if net_pnl < 0 else 0
     
-    # 12ヶ月シミュレーション
-    for m in range(1, 13):
-        # CFD: 複利で増えると仮定 (うまくいった場合)
-        p_profit = personal_balance * (monthly_roi / 100)
-        personal_balance += p_profit
-        personal_data.append(personal_balance - budget) # 純利益
-
-        # Prop: 遅延後は巨額運用
-        if m <= months_delayed:
-            prop_data.append(prop_balance) # 変わらず
-        else:
-            # 利益分配 (80%)
-            gross_profit = prop_acc_size * (monthly_roi / 100)
-            payout = gross_profit * 0.8
-            prop_balance += payout
-            prop_data.append(prop_balance)
-            
-    return personal_data, prop_data, months_delayed, total_cost
+    # プロップ比較
+    # 同じ金額を入金(損)するなら、何回チャレンジできたか？
+    prop_attempts = int(total_deposit / prop_fee) if prop_fee > 0 else 0
+    
+    return {
+        "total_deposit": total_deposit,
+        "total_withdraw": total_withdraw,
+        "net_pnl": net_pnl,
+        "withdrawal_rate": withdrawal_rate,
+        "return_rate": return_rate,
+        "future_loss": future_loss_3y,
+        "prop_attempts": prop_attempts
+    }
 
 # --- 3. Main UI ---
 
-st.title("⚡ THE SMART SWITCH: CFD vs PROP")
-st.markdown("<h4 style='color:#aaa;'>HIGH LEVERAGE REALITY CHECK</h4>", unsafe_allow_html=True)
+st.title("👁️ THE REALITY CHECK")
+st.markdown("<h4 style='color:#aaa;'>ARE YOU INVESTING? OR JUST DEPOSITING?</h4>", unsafe_allow_html=True)
 
-# サイドバー設定
+# サイドバー入力
 with st.sidebar:
-    st.header("📊 YOUR PARAMETERS")
+    st.header("📊 YOUR TRACK RECORD (Last 12 Months)")
     
-    budget = st.number_input("Trading Budget ($)", value=500, step=100, help="失っても生活に支障がない資金")
-    monthly_roi = st.slider("Monthly ROI (%)", 1.0, 20.0, 5.0, 0.5, help="安定して出せる月利")
+    # ユーザーの痛いところを突く入力項目
+    st.markdown("### 📥 DEPOSITS (入金)")
+    dep_count = st.number_input("How many times did you deposit?", min_value=0, value=12, step=1, help="追加入金を含む")
+    dep_avg = st.number_input("Average Deposit Amount ($)", min_value=0, value=500, step=100)
     
-    st.markdown("---")
-    st.header("🏆 PROP CHALLENGE")
-    
-    # 口座サイズ
-    acc_map = {5000: 49, 10000: 99, 25000: 199, 50000: 299, 100000: 499}
-    selected_size = st.selectbox("Target Account ($)", list(acc_map.keys()), index=2, format_func=lambda x: f"${x:,}")
-    fee = acc_map[selected_size]
-    
-    st.markdown(f"**Fee: ${fee}**")
-    
-    # ハードル
-    failures = st.slider("Expected Failures", 0, 5, 2, help="合格するまでに何回失敗しそうですか？")
+    st.markdown("### 📤 WITHDRAWALS (出金)")
+    wd_count = st.number_input("How many times did you withdraw?", min_value=0, value=1, step=1, help="銀行口座に着金した回数")
+    wd_avg = st.number_input("Average Withdrawal Amount ($)", min_value=0, value=300, step=100)
     
     st.markdown("---")
-    st.info("💡 Comparison: Trading your own cash vs Buying a challenge.")
+    st.header("🏆 PROP ALTERNATIVE")
+    prop_fee = st.selectbox("Compare with Prop Fee ($)", [49, 99, 199, 299, 499], index=2)
 
-# --- SECTION 1: 期待値シミュレーター (The Reality of Flipping) ---
+# 計算実行
+res = analyze_reality(dep_count, dep_avg, wd_count, wd_avg, prop_fee)
 
-st.subheader("🎲 The Gambler's Dilemma (Risk Calculator)")
-st.markdown("海外FXで「少額を10倍にする」のと、プロップで「評価を通過する」の期待値を比較します。")
-
-# 入力ゲージ
-c_g1, c_g2 = st.columns(2)
-with c_g1:
-    target_x = st.slider("Target Multiplier (Profit Goal)", 2.0, 10.0, 5.0, 0.5, format="x%.1f")
-    st.caption(f"Goal: Turn ${budget} into ${budget*target_x:,.0f} (x{target_x})")
+# 結果表示
+if res['net_pnl'] >= 0:
+    st.success(f"Congratulations! You are profitable (+${res['net_pnl']:,}). You should scale up with a Prop Firm to leverage your skill.")
+else:
+    # --- SECTION 1: THE PAINFUL TRUTH ---
+    st.subheader("📉 The Cycle of Doom")
     
-with c_g2:
-    success_rate = st.slider("Probability of Success (%)", 1, 20, 5, 1)
-    st.caption(f"Chance of achieving x{target_x} without blowing up: {success_rate}%")
+    c1, c2, c3 = st.columns(3)
+    
+    with c1:
+        st.markdown(f"""
+        <div class="glass-card" style="border-color:#ff0055;">
+            <div class="kpi-label">TOTAL DEPOSITED</div>
+            <div class="kpi-value" style="color:#ff0055;">${res['total_deposit']:,.0f}</div>
+            <div class="kpi-sub">{dep_count} Transactions</div>
+        </div>""", unsafe_allow_html=True)
+        
+    with c2:
+        st.markdown(f"""
+        <div class="glass-card">
+            <div class="kpi-label">WITHDRAWAL RATE</div>
+            <div class="kpi-value">{res['withdrawal_rate']:.1f}%</div>
+            <div class="kpi-sub">{wd_count} out of {dep_count} times</div>
+        </div>""", unsafe_allow_html=True)
+        
+    with c3:
+        st.markdown(f"""
+        <div class="glass-card">
+            <div class="kpi-label">NET LOSS (TUITION)</div>
+            <div class="kpi-value" style="color:#888;">-${abs(res['net_pnl']):,.0f}</div>
+            <div class="kpi-sub">Money gone forever</div>
+        </div>""", unsafe_allow_html=True)
 
-# 期待値計算
-# CFD: 成功なら目標額ゲット、失敗なら全損
-ev_cfd = (budget * target_x * (success_rate/100)) - (budget * (1 - success_rate/100))
-
-# Prop: 成功なら口座ゲット(価値は月利x12ヶ月分と仮定)、失敗なら手数料損
-# 口座の推定価値 = (AccountSize * 5% * 80% split) * 12 months (年収ベース)
-prop_value = (selected_size * 0.05 * 0.8) * 12 
-ev_prop = (prop_value * (success_rate/100)) - (fee * (1 - success_rate/100))
-
-# ゲージ表示
-k1, k2, k3 = st.columns(3)
-
-with k1:
+    # 警告メッセージ
     st.markdown(f"""
-    <div class="glass-card loser-card">
-        <div class="kpi-label">CFD EXPECTED VALUE</div>
-        <div class="kpi-value" style="color: {'#ff0055' if ev_cfd < 0 else '#fff'};">${ev_cfd:,.0f}</div>
-        <div class="kpi-sub">High Risk of Ruin</div>
-    </div>""", unsafe_allow_html=True)
+    <div class="wake-up-call">
+        <h3 style="margin:0; color:#ff0055;">🚨 REALITY CHECK</h3>
+        <p style="font-size:1.1rem; margin-top:10px;">
+            At this pace, you are paying the market <b>${abs(res['net_pnl']):,.0f} per year</b> just to trade.<br>
+            If you continue this for 3 years, you will lose another <b>${res['future_loss']:,.0f}</b>.<br>
+            This is not trading. This is <b>feeding the broker</b>.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
 
-with k2:
+    # --- SECTION 2: THE PROP SOLUTION ---
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    st.subheader("🛡️ The Smart Pivot: Buy Skill, Not Losses")
+    
+    c_chart, c_text = st.columns([1, 1])
+    
+    with c_chart:
+        # 比較チャート: 入金額 vs プロップ挑戦回数
+        fig = go.Figure()
+        
+        fig.add_trace(go.Bar(
+            y=['Personal FX', 'Prop Firm'],
+            x=[1, res['prop_attempts']],
+            orientation='h',
+            text=[f"1 Account (Blown)", f"{res['prop_attempts']} Challenges"],
+            textposition='auto',
+            marker=dict(color=['#555', '#00ff99'], opacity=0.8)
+        ))
+        
+        fig.update_layout(
+            title="What your losses could have bought:",
+            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+            font_color='#e0e0e0', height=250,
+            xaxis=dict(showgrid=False, title="Number of Opportunities"),
+            yaxis=dict(showgrid=False)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+        
+    with c_text:
+        st.markdown(f"""
+        <div class="education-box">
+            <h4 style="margin:0; color:#00ff99;">WHY PROP FIRMS ARE SAFER</h4>
+            <ul style="margin-top:10px; font-size:1rem;">
+                <li><b>Cost Cap:</b> You spent <b>${res['total_deposit']:,.0f}</b> on deposits. For that same money, you could have bought <b>{res['prop_attempts']} Prop Challenges</b>.</li>
+                <li><b>Forced Discipline:</b> In FX, you deposit -> loose discipline -> blow up -> repeat. Prop firms force you to stop (Daily Limit) before you lose everything.</li>
+                <li><b>Gambling vs. Training:</b> Personal FX feeds your greed (unlimited leverage). Prop firms train your risk management (strict rules).</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # --- SECTION 3: BEHAVIORAL ANALYSIS ---
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.subheader("🧠 Behavioral Shift")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("#### 🔴 PERSONAL FX (CFD)")
+        st.markdown("""
+        - **Mindset:** "I need to double this account quickly."
+        - **Action:** Over-leverage, Revenge Trading.
+        - **Result:** **100% Loss of Capital.**
+        - **Learning:** Minimal (Emotional damage).
+        """)
+        
+    with col2:
+        st.markdown("#### 🟢 PROP FIRM (SuperFunded)")
+        st.markdown("""
+        - **Mindset:** "I need to protect this account to get paid."
+        - **Action:** Risk Control, Consistency.
+        - **Result:** **Funded or Small Fee Loss.**
+        - **Learning:** Massive (Professional habits).
+        """)
+
+    # --- CTA ---
+    st.markdown("---")
     st.markdown(f"""
-    <div class="glass-card" style="border:none; background:transparent; box-shadow:none;">
-        <div style="font-size:1rem; color:#888;">THE VERDICT</div>
-        <div style="font-size:1.2rem; color:#ccc;">Same {success_rate}% Win Rate</div>
-        <div style="font-size:3rem; font-weight:900; color:#00ff99;">PROFITABLE</div>
-    </div>""", unsafe_allow_html=True)
-
-with k3:
-    st.markdown(f"""
-    <div class="glass-card winner-card">
-        <div class="kpi-label">PROP EXPECTED VALUE</div>
-        <div class="kpi-value" style="color: #00ff99;">${ev_prop:,.0f}</div>
-        <div class="kpi-sub">Risk is Capped at Fee</div>
-    </div>""", unsafe_allow_html=True)
-
-st.markdown(f"""
-<div class="danger-zone">
-    <b>📉 REALITY CHECK:</b><br>
-    Trying to flip <b>${budget} to ${budget*target_x:,.0f}</b> in CFD usually has a negative expected value (you lose money over time).<br>
-    With the same <b>{success_rate}% success rate</b>, passing a Prop Challenge creates an asset worth <b>${prop_value:,.0f}/year</b>.<br>
-    The math is simple: <b>Don't gamble your principal. Risk our capital.</b>
-</div>
-""", unsafe_allow_html=True)
-
-# --- SECTION 2: 12-Month Trajectory ---
-
-st.markdown("---")
-st.subheader("📈 1-Year Financial Projection")
-
-# シミュレーション実行
-cfd_res, prop_res, delay, cost = run_simulation(budget, monthly_roi, failures, selected_size, fee)
-df = pd.DataFrame({"Month": range(1, 13), "CFD": cfd_res, "Prop": prop_res})
-
-# 最終結果
-final_cfd = cfd_res[-1]
-final_prop = prop_res[-1]
-multiplier = final_prop / final_cfd if final_cfd > 0 else 0
-
-# グラフ描画
-fig = go.Figure()
-
-# CFD Line
-fig.add_trace(go.Scatter(
-    x=df['Month'], y=df['CFD'],
-    mode='lines+markers', name=f'CFD (Start ${budget})',
-    line=dict(color='#ff0055', width=2, dash='dash')
-))
-
-# Prop Line
-fig.add_trace(go.Scatter(
-    x=df['Month'], y=df['Prop'],
-    mode='lines+markers', name=f'SuperFunded ${selected_size:,}',
-    line=dict(color='#00ff99', width=4)
-))
-
-# 評価期間のアノテーション
-if delay < 12:
-    fig.add_vrect(
-        x0=0, x1=delay,
-        fillcolor="grey", opacity=0.1,
-        layer="below", line_width=0,
-        annotation_text=f"EVALUATION & FAILURES ({failures}x)", 
-        annotation_position="top left", annotation_font_color="#aaa"
-    )
-
-fig.update_layout(
-    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-    font_color='#ccc', height=450,
-    xaxis=dict(showgrid=False, title="Month"),
-    yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)', title="Net Profit ($)"),
-    legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center")
-)
-st.plotly_chart(fig, use_container_width=True)
-
-# 結論メッセージ
-st.markdown(f"""
-<div style="text-align:center; padding:20px;">
-    <h2>Total Difference: <span style="color:#00ff99">${final_prop - final_cfd:,.0f}</span></h2>
-    <p style="color:#aaa;">
-        Even if you fail <b>{failures} times</b>, the Prop model beats compounding your own cash.<br>
-        Stop playing small. Start trading big.
-    </p>
-</div>
-""", unsafe_allow_html=True)
-
-if st.button("🔥 START YOUR CHALLENGE (Risk: Fees Only) 🔥"):
-    st.balloons()
+    <div style="text-align:center; padding:30px;">
+        <h2>Stop Funding Your Broker. Start Funding Yourself.</h2>
+        <p style="color:#aaa;">You have paid enough tuition to the market. Switch to a regulated environment.</p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    if st.button("🔥 SWITCH TO PROFESSIONAL TRADING 🔥"):
+        st.balloons()
