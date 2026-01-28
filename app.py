@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import google.generativeai as genai
 import os
 import requests
-from datetime import datetime, timezone
+from datetime import datetime
 import re
 from collections import Counter
 
@@ -96,7 +96,7 @@ def get_crypto_price():
         r_chart = requests.get(chart_url, timeout=5)
         chart_data = r_chart.json()
         df_chart = pd.DataFrame(chart_data['prices'], columns=['timestamp', 'price'])
-        df_chart['timestamp'] = pd.to_datetime(df_chart['timestamp'], unit='ms', utc=True)
+        df_chart['timestamp'] = pd.to_datetime(df_chart['timestamp'], unit='ms')
         df_chart['SMA'] = df_chart['price'].rolling(window=24).mean()
         
         return price, change, df_chart
@@ -120,19 +120,15 @@ def get_real_market_news(limit=25):
     try:
         response = requests.get(url, timeout=10)
         data = response.json()
-        if "Data" not in data: 
-            return []
+        if "Data" not in data: return []
         news_items = []
         for i, item in enumerate(data["Data"][:limit]):
             title = item.get("title", "")
             source = item.get("source_info", {}).get("name", "CryptoCompare")
             url = item.get("url", "#")
             published_on = item.get("published_on", 0)
-
-            # ✅ UTCで一貫したtimestampに（小さな改善）
-            dt_obj = datetime.fromtimestamp(published_on, tz=timezone.utc)
-            date_str = dt_obj.strftime("%Y-%m-%d %H:%M UTC")
-
+            dt_obj = datetime.fromtimestamp(published_on)
+            date_str = dt_obj.strftime("%Y-%m-%d %H:%M")
             news_items.append({
                 "id": i, "text": title, "date_str": date_str,
                 "timestamp": dt_obj, "source": source, "link": url
@@ -145,11 +141,10 @@ def get_real_market_news(limit=25):
 # --- 4. Analytics Modules ---
 
 def analyze_sentiment(news_list):
-    if not news_list: 
-        return []
+    if not news_list: return []
     
     results = []
-    # バッチ処理（10件ずつ処理してエラーを防ぐ）
+    # バッチ処理
     batch_size = 10
     
     for i in range(0, len(news_list), batch_size):
@@ -168,10 +163,8 @@ def analyze_sentiment(news_list):
         """
         try:
             res = model.generate_content(prompt)
-            if not res.text: 
-                continue
+            if not res.text: continue
             
-            # 正規表現で強力にパースする
             for line in res.text.strip().split("\n"):
                 match = re.search(r'(\d+)\s*\|\s*([A-Za-z]+)\s*\|\s*(-?\d+)', line)
                 if match:
@@ -179,11 +172,10 @@ def analyze_sentiment(news_list):
                     label = match.group(2)
                     score = int(match.group(3))
                     
-                    # 該当するニュースアイテムを探して結果に追加
                     found_item = None
                     for item in news_list:
                         if item['id'] == nid:
-                            found_item = item.copy()  # コピーを作成
+                            found_item = item.copy()
                             found_item['Label'] = label
                             found_item['Score'] = score
                             break
@@ -198,8 +190,7 @@ def analyze_sentiment(news_list):
     return results
 
 def extract_keywords(df):
-    if df.empty: 
-        return []
+    if df.empty: return []
     text = " ".join(df['text'].tolist()).lower()
     ignore = ['to', 'in', 'for', 'of', 'the', 'on', 'and', 'a', 'is', 'at', 'bitcoin', 'crypto', 'price', 'market', 'btc', 'after', 'as', 'with', 'from', 'by', 'vs', 'new', 'top', 'why', 'will', 'news', 'analysis', 'live', '-', '|', 'cryptocurrency', 'says', 'update', 'daily']
     words = re.findall(r'\b\w{3,}\b', text)
@@ -225,7 +216,6 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
             if analyzed_data:
                 df = pd.DataFrame(analyzed_data)
             else:
-                # AIが失敗してもニュースは表示する
                 df = pd.DataFrame(raw_news)
                 st.warning("AI Analysis partially failed due to traffic. Showing Raw Data.")
 
@@ -281,17 +271,9 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
         st.subheader("📈 Price Action + Trend")
         if not btc_chart.empty:
             fig = go.Figure()
-            fig.add_trace(go.Scatter(
-                x=btc_chart['timestamp'], y=btc_chart['price'],
-                mode='lines', name='Price',
-                line=dict(color='#00e5ff', width=2)
-            ))
+            fig.add_trace(go.Scatter(x=btc_chart['timestamp'], y=btc_chart['price'], mode='lines', name='Price', line=dict(color='#00e5ff', width=2)))
             if 'SMA' in btc_chart.columns:
-                fig.add_trace(go.Scatter(
-                    x=btc_chart['timestamp'], y=btc_chart['SMA'],
-                    mode='lines', name='MA(24h)',
-                    line=dict(color='#bd00ff', width=1, dash='dash')
-                ))
+                fig.add_trace(go.Scatter(x=btc_chart['timestamp'], y=btc_chart['SMA'], mode='lines', name='MA(24h)', line=dict(color='#bd00ff', width=1, dash='dash')))
             fig.update_layout(
                 paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                 font=dict(color='#888'), margin=dict(l=0, r=0, t=0, b=0), height=350,
@@ -305,30 +287,24 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
     with c_chart2:
         st.subheader("🌊 Sentiment Flow")
         if not df.empty and 'Score' in df.columns and 'timestamp' in df.columns:
-            # ✅ 修正案1 + 小さな改善（UTC変換 / NaT除外 / ソート / 重複timestamp除去）
+            # ★★★ グラフ修正ポイント（リニア線形補間＆重複削除） ★★★
             chart_df = df.copy()
-
-            # timestampを確実にdatetime(UTC)へ（失敗はNaT）
-            chart_df['timestamp'] = pd.to_datetime(chart_df['timestamp'], utc=True, errors='coerce')
-
-            # 必要列が欠けている行を落とす
-            chart_df = chart_df.dropna(subset=['timestamp', 'Score'])
-
-            # 時系列で右に進むようにソート（古い→新しい）
+            chart_df['timestamp'] = pd.to_datetime(chart_df['timestamp'])
+            
+            # 同じ時間のデータは平均値をとって1つにまとめる（これで上下のブレも防ぐ）
+            chart_df = chart_df.groupby('timestamp', as_index=False)['Score'].mean()
+            
+            # 昇順ソート（必須）
             chart_df = chart_df.sort_values(by='timestamp', ascending=True)
-
-            # 同一timestampが複数あると縦線が出やすいので、最後の1件に統一（任意だが効く）
-            chart_df = chart_df.drop_duplicates(subset=['timestamp'], keep='last')
-
-            # ✅ splineをやめてlinearに（左に戻る/自己交差の主因を排除）
+            
+            # 直線（linear）で描画してループを防ぐ
             fig = px.area(chart_df, x='timestamp', y='Score', line_shape='linear')
 
             fig.update_traces(line_color='#00ff99', fillcolor='rgba(0, 255, 153, 0.1)')
             fig.update_layout(
                 paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                 font=dict(color='#888'), margin=dict(l=0, r=0, t=0, b=0), height=350,
-                yaxis=dict(range=[-100, 100], gridcolor='rgba(255,255,255,0.1)'),
-                xaxis=dict(showticklabels=False)
+                yaxis=dict(range=[-100, 100], gridcolor='rgba(255,255,255,0.1)'), xaxis=dict(showticklabels=False)
             )
             st.plotly_chart(fig, use_container_width=True)
         else:
@@ -344,29 +320,19 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
             if keywords:
                 kw_df = pd.DataFrame(keywords, columns=['word', 'count'])
                 fig = px.bar(kw_df, x='count', y='word', orientation='h', color='count', color_continuous_scale='Viridis')
-                fig.update_layout(
-                    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                    font_color='#e0e0e0', yaxis={'categoryorder':'total ascending'},
-                    height=300, margin=dict(t=0,b=0)
-                )
+                fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color='#e0e0e0', yaxis={'categoryorder':'total ascending'}, height=300, margin=dict(t=0,b=0))
                 st.plotly_chart(fig, use_container_width=True)
             else:
                 st.info("Insufficient text for analysis.")
         else:
-            st.info("No narrative data.")
+             st.info("No narrative data.")
 
     with c_pie:
         st.subheader("🥧 Emotion Ratio")
         if not df.empty and 'Label' in df.columns:
-            cmap = {
-                'Euphoria': '#00FF99', 'Optimism': '#00e5ff', 'Positive': '#3498DB',
-                'Neutral': '#555', 'Negative': '#F1C40F', 'Fear': '#ff5e00', 'Despair': '#ff0055'
-            }
+            cmap = {'Euphoria': '#00FF99', 'Optimism': '#00e5ff', 'Positive': '#3498DB', 'Neutral': '#555', 'Negative': '#F1C40F', 'Fear': '#ff5e00', 'Despair': '#ff0055'}
             fig = px.pie(df, names='Label', hole=0.6, color='Label', color_discrete_map=cmap)
-            fig.update_layout(
-                paper_bgcolor='rgba(0,0,0,0)', font_color='#e0e0e0',
-                height=300, margin=dict(t=0,b=0), showlegend=True
-            )
+            fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', font_color='#e0e0e0', height=300, margin=dict(t=0,b=0), showlegend=True)
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No emotion data.")
@@ -374,22 +340,20 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
     # ROW 4: FEED
     st.subheader("📋 Intelligence Logs")
     if not df.empty:
-        # ログは「新しい順」が見やすいので、グラフとは逆に降順で表示する
+        # ログは最新順で見せる
         if 'timestamp' in df.columns:
-            df_log = df.copy()
-            df_log['timestamp'] = pd.to_datetime(df_log['timestamp'], utc=True, errors='coerce')
-            df_log = df_log.sort_values(by='timestamp', ascending=False)
+             df_log = df.sort_values(by='timestamp', ascending=False)
         else:
-            df_log = df
+             df_log = df
              
         for idx, row in df_log.iterrows():
             s_col = "#00ff99" if row.get('Score', 0) > 0 else "#ff0055" if row.get('Score', 0) < 0 else "#888"
             date_display = row.get('date_str', 'Recent')
             st.markdown(f"""
             <div style="border-left: 3px solid {s_col}; padding-left: 15px; margin-bottom: 10px; background: rgba(255,255,255,0.02);">
-                <div style="font-size: 0.8rem; color: #666;">{date_display} | {row.get('source','-')}</div>
+                <div style="font-size: 0.8rem; color: #666;">{date_display} | {row['source']}</div>
                 <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <a href="{row.get('link','#')}" target="_blank" style="color: #eee; font-weight:bold; text-decoration:none; font-size:1rem;">{row.get('text','')}</a>
+                    <a href="{row['link']}" target="_blank" style="color: #eee; font-weight:bold; text-decoration:none; font-size:1rem;">{row['text']}</a>
                     <div style="text-align:right;">
                         <span style="color:{s_col}; font-weight:bold;">{row.get('Label', '-')}</span> <span style="font-size:0.8rem; color:#666;">({row.get('Score', 0)})</span>
                     </div>
