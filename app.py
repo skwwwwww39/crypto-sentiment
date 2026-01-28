@@ -9,7 +9,7 @@ import math
 from datetime import datetime
 
 # --- 1. デザイン設定 (Cyberpunk UI) ---
-st.set_page_config(page_title="Crypto AI Sentiment 100", layout="wide", page_icon="⚡")
+st.set_page_config(page_title="Real Crypto Sentiment", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
@@ -39,7 +39,6 @@ st.markdown("""
         text-transform: uppercase;
         letter-spacing: 1.5px;
     }
-    /* グラフの説明文 */
     .chart-desc {
         font-size: 0.8rem;
         color: #888;
@@ -61,62 +60,78 @@ if api_key:
 
 CRYPTOPANIC_API_KEY = "ce5d1a3effe7a877dcf19adbce33ef35ded05f5e"
 
-# --- 3. データ取得 (100件取得のためのループ処理) ---
-def get_bulk_news(limit=100):
-    """CryptoPanicからページをめくって合計limit件取得する"""
+# --- 3. データ取得 (リトライ強化・シミュレーション廃止) ---
+def get_bulk_news_real_only(limit=50):
+    """
+    CryptoPanicからページをめくってデータを取得する。
+    シミュレーションは一切行わない。
+    """
     news_items = []
     page = 1
+    max_retries = 3 # 失敗しても3回までは粘る
     
-    # ブラウザ偽装ヘッダー
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124 Safari/537.36"}
     
     status_container = st.empty()
     
-    try:
-        while len(news_items) < limit:
-            # 進行状況表示
-            status_container.info(f"📥 Fetching data... {len(news_items)}/{limit} posts gathered.")
+    while len(news_items) < limit:
+        status_container.info(f"📥 Fetching REAL data from page {page}... ({len(news_items)}/{limit})")
+        
+        url = f"https://cryptopanic.com/api/v1/posts/?auth_token={CRYPTOPANIC_API_KEY}&public=true&filter=rising&page={page}"
+        
+        success = False
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(url, headers=headers, timeout=15)
+                if response.status_code == 200:
+                    success = True
+                    break
+                else:
+                    time.sleep(2) # エラーなら少し待ってリトライ
+            except Exception:
+                time.sleep(2)
+        
+        if not success:
+            st.warning(f"Page {page} could not be fetched. Stopping here.")
+            break
             
-            url = f"https://cryptopanic.com/api/v1/posts/?auth_token={CRYPTOPANIC_API_KEY}&public=true&filter=rising&page={page}"
-            response = requests.get(url, headers=headers, timeout=10)
+        data = response.json()
+        if "results" not in data or not data["results"]:
+            break # もうデータがない
             
-            if response.status_code != 200:
-                break
-                
-            data = response.json()
-            if "results" not in data or not data["results"]:
-                break
-                
-            for item in data["results"]:
-                title = item["title"]
-                published_at = item["created_at"]
-                # 日付変換 (2024-01-29T12:00:00Z -> 2024-01-29 12:00)
+        for item in data["results"]:
+            title = item["title"]
+            published_at = item["created_at"]
+            # 日付変換
+            try:
                 dt_obj = datetime.strptime(published_at, "%Y-%m-%dT%H:%M:%SZ")
                 fmt_date = dt_obj.strftime("%Y-%m-%d %H:%M")
-                
-                news_items.append({
-                    "id": len(news_items),
-                    "text": title,
-                    "date": fmt_date,
-                    "source": item["domain"]
-                })
-                if len(news_items) >= limit:
-                    break
+            except:
+                fmt_date = published_at
             
-            page += 1
-            time.sleep(0.5) # APIへの配慮
+            # ソースフィルタ（Botっぽいソースを除外して質を高める）
+            domain = item.get("domain", "Unknown")
             
-        status_container.empty()
-        return news_items
+            news_items.append({
+                "id": len(news_items),
+                "text": title,
+                "date": fmt_date,
+                "source": domain
+            })
+            if len(news_items) >= limit:
+                break
         
-    except Exception as e:
-        status_container.error(f"Connection Error: {e}")
-        return []
+        page += 1
+        time.sleep(1.0) # API制限にかからないよう、あえてゆっくり取得
+        
+    status_container.empty()
+    return news_items
 
-# --- 4. バッチ分析 (高速化) ---
+# --- 4. バッチ分析 ---
 def analyze_batch(news_list):
     """20件ずつまとめてAIに分析させる"""
     if not api_key: return []
+    if not news_list: return []
     
     results = []
     chunk_size = 20
@@ -129,21 +144,16 @@ def analyze_batch(news_list):
         chunk = news_list[i:i + chunk_size]
         current_chunk_num = (i // chunk_size) + 1
         
-        status_text.markdown(f"🧠 Neural Analysis in progress... **Batch {current_chunk_num}/{total_chunks}**")
+        status_text.markdown(f"🧠 AI Analyzing real data... **Batch {current_chunk_num}/{total_chunks}**")
         
-        # 複数のニュースを箇条書きで渡す
         news_text_block = "\n".join([f"{item['id']}: {item['text']}" for item in chunk])
         
         prompt = f"""
-        Analyze the sentiment of these crypto news headlines.
-        Return a list of scores and labels.
-        
-        Format constraints:
-        - Output ONLY raw lines: ID | Label | Score
-        - Label must be one of: [Despair, Fear, Negative, Positive, Optimism, Euphoria]
-        - Score must be integer: -100 (Despair) to 100 (Euphoria)
-        
-        Headlines:
+        Analyze sentiment of these crypto news.
+        Format: ID | Label | Score
+        Label: [Despair, Fear, Negative, Positive, Optimism, Euphoria]
+        Score: -100 to 100
+        Data:
         {news_text_block}
         """
         
@@ -151,7 +161,6 @@ def analyze_batch(news_list):
             response = model.generate_content(prompt)
             lines = response.text.strip().split("\n")
             
-            # AIの回答をパースして元の辞書に結合
             for line in lines:
                 parts = line.split("|")
                 if len(parts) == 3:
@@ -160,7 +169,6 @@ def analyze_batch(news_list):
                         label = parts[1].strip()
                         score = int(parts[2].strip())
                         
-                        # IDでマッチング
                         for item in chunk:
                             if item['id'] == n_id:
                                 item['Label'] = label
@@ -169,153 +177,119 @@ def analyze_batch(news_list):
                     except:
                         continue
         except Exception as e:
-            print(f"Error in batch: {e}")
+            print(f"Batch Error: {e}")
         
         progress_bar.progress(current_chunk_num / total_chunks)
-        time.sleep(1) # Rate limit回避
+        time.sleep(1) 
 
     status_text.empty()
     progress_bar.empty()
     return results
 
-# --- シミュレーションデータ生成（API失敗時用） ---
-def generate_mock_100():
-    data = []
-    import random
-    sources = ["CoinDesk", "CoinTelegraph", "Twitter", "Reddit"]
-    for i in range(100):
-        score = random.randint(-80, 80)
-        label = "Neutral"
-        if score > 60: label = "Euphoria"
-        elif score > 20: label = "Optimism"
-        elif score > 0: label = "Positive"
-        elif score > -20: label = "Negative"
-        elif score > -60: label = "Fear"
-        else: label = "Despair"
-        
-        data.append({
-            "text": f"Simulation News Packet #{i} - Market movement detected",
-            "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "source": random.choice(sources),
-            "Label": label,
-            "Score": score
-        })
-    return data
-
 # --- 5. メインUI ---
-st.title("⚡ Cyberpunk Sentiment Core (100x)")
-st.markdown("Analysis of the last **100** market signals.")
+st.title("⚡ Real-Time Sentiment (No Simulation)")
+st.markdown("Fetching only **REAL** market data. This may take a moment.")
 
-if st.button("SCAN MARKET (100 POSTS) 🔄", type="primary"):
+# ボタン
+if st.button("FETCH REAL DATA 🔄", type="primary"):
     
-    # 1. データ取得
-    raw_news = get_bulk_news(limit=100)
+    # 1. データ取得（ここが成功しないと何も表示しない）
+    raw_news = get_bulk_news_real_only(limit=60) # 確実性を高めるため一旦60件に設定
     
-    # データが取れなかったらシミュレーション
     if not raw_news:
-        st.warning("⚠️ Live feed offline. Generating 100 simulation nodes.")
-        analyzed_data = generate_mock_100()
+        st.error("❌ Failed to fetch real data. Please try again in a few minutes.")
     else:
         # 2. AI分析
         analyzed_data = analyze_batch(raw_news)
-        # マッチング漏れがあった場合の補正
+        
         if len(analyzed_data) == 0:
-            st.error("AI Analysis failed. Showing simulation.")
-            analyzed_data = generate_mock_100()
+            st.error("❌ AI Analysis failed. Please check API Key.")
+        else:
+            df = pd.DataFrame(analyzed_data)
 
-    df = pd.DataFrame(analyzed_data)
+            # --- 結果表示 ---
+            st.divider()
+            
+            # 期間表示
+            dates = pd.to_datetime(df['date'])
+            period_str = f"{dates.min().strftime('%m/%d %H:%M')} 〜 {dates.max().strftime('%m/%d %H:%M')}"
+            st.markdown(f"<div style='text-align:center; color:#888; margin-bottom:20px;'>Real Data Period: {period_str}</div>", unsafe_allow_html=True)
 
-    # --- 分析結果表示 ---
-    st.divider()
-    
-    # 期間表示
-    if not df.empty:
-        dates = pd.to_datetime(df['date'])
-        period_str = f"{dates.min().strftime('%m/%d %H:%M')} 〜 {dates.max().strftime('%m/%d %H:%M')}"
-        st.markdown(f"<div style='text-align:center; color:#888; margin-bottom:20px;'>Data Period: {period_str}</div>", unsafe_allow_html=True)
+            # KPI
+            avg_score = df['Score'].mean()
+            if avg_score >= 60: mood, color = "EUPHORIA 🚀", "#00FF99"
+            elif avg_score >= 20: mood, color = "OPTIMISM 📈", "#00e5ff"
+            elif avg_score <= -60: mood, color = "DESPAIR 💀", "#ff0055"
+            elif avg_score <= -20: mood, color = "FEAR 😱", "#ff5e00"
+            else: mood, color = "NEUTRAL 😐", "#bd00ff"
 
-    # KPI計算
-    avg_score = df['Score'].mean()
-    if avg_score >= 60: mood, color = "EUPHORIA 🚀", "#00FF99"
-    elif avg_score >= 20: mood, color = "OPTIMISM 📈", "#00e5ff"
-    elif avg_score <= -60: mood, color = "DESPAIR 💀", "#ff0055"
-    elif avg_score <= -20: mood, color = "FEAR 😱", "#ff5e00"
-    else: mood, color = "NEUTRAL 😐", "#bd00ff"
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Market Mood</div>
+                    <div class="metric-value" style="color:{color}">{mood}</div>
+                </div>""", unsafe_allow_html=True)
+            with c2:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Avg Sentiment Score</div>
+                    <div class="metric-value">{int(avg_score)}</div>
+                </div>""", unsafe_allow_html=True)
+            with c3:
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Real Posts Analyzed</div>
+                    <div class="metric-value">{len(df)}</div>
+                </div>""", unsafe_allow_html=True)
 
-    # KPIカード
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Market Mood</div>
-            <div class="metric-value" style="color:{color}">{mood}</div>
-        </div>""", unsafe_allow_html=True)
-    with c2:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Avg Sentiment Score</div>
-            <div class="metric-value">{int(avg_score)}</div>
-        </div>""", unsafe_allow_html=True)
-    with c3:
-        st.markdown(f"""
-        <div class="metric-card">
-            <div class="metric-label">Data Points</div>
-            <div class="metric-value">{len(df)}</div>
-        </div>""", unsafe_allow_html=True)
+            st.markdown("---")
 
-    st.markdown("---")
+            # グラフエリア
+            col_left, col_right = st.columns([2, 1])
 
-    # --- グラフエリア (説明付き) ---
-    col_left, col_right = st.columns([2, 1])
+            with col_left:
+                st.subheader("📊 Sentiment Spectrum")
+                st.markdown("<div class='chart-desc'>Real news sentiment distribution.<br>Left: Bearish | Right: Bullish</div>", unsafe_allow_html=True)
+                
+                fig_bar = px.bar(
+                    df, 
+                    x="Score", 
+                    y="source", 
+                    color="Score",
+                    hover_data=["text"],
+                    orientation='h',
+                    color_continuous_scale=['#ff0055', '#bd00ff', '#00e5ff', '#00FF99'],
+                    range_x=[-100, 100],
+                )
+                fig_bar.update_layout(
+                    paper_bgcolor='rgba(0,0,0,0)', 
+                    plot_bgcolor='rgba(0,0,0,0)', 
+                    font_color='#e0c0ff',
+                    yaxis={'visible': False}
+                )
+                st.plotly_chart(fig_bar, use_container_width=True)
 
-    with col_left:
-        st.subheader("📊 Sentiment Spectrum")
-        st.markdown("<div class='chart-desc'>個々のニュースの感情スコア分布。<br>左に行くと「悲観（売り）」、右に行くと「楽観（買い）」を表します。</div>", unsafe_allow_html=True)
-        
-        # 散布図的バーチャート
-        fig_bar = px.bar(
-            df, 
-            x="Score", 
-            y="source", # Y軸をソースにして分散させる
-            color="Score",
-            hover_data=["text"],
-            orientation='h',
-            color_continuous_scale=['#ff0055', '#bd00ff', '#00e5ff', '#00FF99'],
-            range_x=[-100, 100],
-            title=""
-        )
-        fig_bar.update_layout(
-            paper_bgcolor='rgba(0,0,0,0)', 
-            plot_bgcolor='rgba(0,0,0,0)', 
-            font_color='#e0c0ff',
-            xaxis_title="← Bearish (Fear/Despair) ------------------ Bullish (Optimism/Euphoria) →",
-            yaxis={'visible': False} # ごちゃつくので隠す
-        )
-        st.plotly_chart(fig_bar, use_container_width=True)
+            with col_right:
+                st.subheader("🥧 Emotion Ratio")
+                color_map = {
+                    "Euphoria": "#00FF99", "Optimism": "#00e5ff", 
+                    "Positive": "#3498DB", "Neutral": "#bd00ff", 
+                    "Negative": "#F1C40F", "Fear": "#ff5e00", "Despair": "#ff0055"
+                }
+                fig_pie = px.pie(
+                    df, 
+                    names="Label", 
+                    hole=0.6, 
+                    color="Label", 
+                    color_discrete_map=color_map
+                )
+                fig_pie.update_layout(
+                    paper_bgcolor='rgba(0,0,0,0)', 
+                    font_color='#e0c0ff',
+                    legend=dict(orientation="h", y=-0.1)
+                )
+                st.plotly_chart(fig_pie, use_container_width=True)
 
-    with col_right:
-        st.subheader("🥧 Emotion Ratio")
-        st.markdown("<div class='chart-desc'>市場全体の感情比率。<br>どの感情が支配的かを確認します。</div>", unsafe_allow_html=True)
-        
-        color_map = {
-            "Euphoria": "#00FF99", "Optimism": "#00e5ff", 
-            "Positive": "#3498DB", "Neutral": "#bd00ff", 
-            "Negative": "#F1C40F", "Fear": "#ff5e00", "Despair": "#ff0055"
-        }
-        fig_pie = px.pie(
-            df, 
-            names="Label", 
-            hole=0.6, 
-            color="Label", 
-            color_discrete_map=color_map
-        )
-        fig_pie.update_layout(
-            paper_bgcolor='rgba(0,0,0,0)', 
-            font_color='#e0c0ff',
-            legend=dict(orientation="h", y=-0.1) # 凡例を下にする
-        )
-        st.plotly_chart(fig_pie, use_container_width=True)
-
-    # 生データ
-    with st.expander(f"📋 View All {len(df)} Analyzed Logs"):
-        st.dataframe(df, use_container_width=True)
+            with st.expander(f"📋 View All Real Data Logs"):
+                st.dataframe(df, use_container_width=True)
