@@ -78,14 +78,13 @@ if not api_key:
     st.stop()
 
 genai.configure(api_key=api_key)
-# 無料枠が多いLiteモデル
+# 指定のLiteモデルを使用
 model = genai.GenerativeModel('gemini-flash-lite-latest')
 
-# --- 3. Robust Data Fetching (CryptoCompare API) ---
+# --- 3. Data Fetching (CryptoCompare) ---
 
 @st.cache_data(ttl=300)
 def get_crypto_price():
-    """CoinGeckoから価格とチャート取得"""
     try:
         url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true"
         r = requests.get(url, timeout=5)
@@ -116,85 +115,81 @@ def get_fear_greed_index():
     except:
         return 50, "Neutral"
 
-def get_real_market_news(limit=30):
-    """
-    CryptoCompare APIを使用して、絶対にブロックされない正規ルートでニュースを取得する。
-    世界中の主要クリプトメディアのニュースが集約されている。
-    """
+def get_real_market_news(limit=25):
     url = "https://min-api.cryptocompare.com/data/v2/news/?lang=EN"
-    
     try:
         response = requests.get(url, timeout=10)
         data = response.json()
-        
-        if "Data" not in data:
-            return []
-            
+        if "Data" not in data: return []
         news_items = []
-        # データ構造を整形
         for i, item in enumerate(data["Data"][:limit]):
             title = item.get("title", "")
             source = item.get("source_info", {}).get("name", "CryptoCompare")
             url = item.get("url", "#")
             published_on = item.get("published_on", 0)
-            
-            # タイムスタンプ変換
             dt_obj = datetime.fromtimestamp(published_on)
             date_str = dt_obj.strftime("%Y-%m-%d %H:%M")
-            
             news_items.append({
-                "id": i,
-                "text": title,
-                "date_str": date_str,
-                "timestamp": dt_obj,
-                "source": source,
-                "link": url
+                "id": i, "text": title, "date_str": date_str,
+                "timestamp": dt_obj, "source": source, "link": url
             })
-            
         return news_items
     except Exception as e:
         st.error(f"API Error: {e}")
         return []
 
-# --- 4. Analytics Modules ---
+# --- 4. Analytics Modules (Improved) ---
 
 def analyze_sentiment(news_list):
     if not news_list: return []
-    news_block = "\n".join([f"ID {item['id']}: {item['text']}" for item in news_list])
     
-    prompt = f"""
-    Analyze sentiment of {len(news_list)} crypto headlines.
-    Return JSON list: ID|Label|Score
-    Label: [Euphoria, Optimism, Positive, Neutral, Negative, Fear, Despair]
-    Score: -100 to 100
+    results = []
+    # ★改善点：バッチ処理（10件ずつ処理してエラーを防ぐ）
+    batch_size = 10
     
-    Headlines:
-    {news_block}
-    """
-    try:
-        res = model.generate_content(prompt)
-        if not res.text: return []
-        results = []
-        for line in res.text.strip().split("\n"):
-            parts = line.split("|")
-            if len(parts) == 3:
-                try:
-                    nid = int(parts[0].replace("ID", "").strip())
-                    label = parts[1].strip()
-                    score = int(parts[2].strip())
+    for i in range(0, len(news_list), batch_size):
+        batch = news_list[i:i+batch_size]
+        news_block = "\n".join([f"ID {item['id']}: {item['text']}" for item in batch])
+        
+        prompt = f"""
+        Analyze sentiment of these {len(batch)} crypto headlines.
+        Return ONLY a list in this exact format: ID|Label|Score
+        Label must be one of: [Euphoria, Optimism, Positive, Neutral, Negative, Fear, Despair]
+        Score is integer from -100 to 100.
+        Do not use markdown.
+        
+        Headlines:
+        {news_block}
+        """
+        try:
+            res = model.generate_content(prompt)
+            if not res.text: continue
+            
+            # ★改善点：正規表現で強力にパースする
+            for line in res.text.strip().split("\n"):
+                # "数字 | 文字 | 数字" のパターンを探す
+                match = re.search(r'(\d+)\s*\|\s*([A-Za-z]+)\s*\|\s*(-?\d+)', line)
+                if match:
+                    nid = int(match.group(1))
+                    label = match.group(2)
+                    score = int(match.group(3))
+                    
                     for item in news_list:
                         if item['id'] == nid:
                             item['Label'] = label
                             item['Score'] = score
                             results.append(item)
-                except: continue
-        return results
-    except: return []
+        except Exception as e:
+            # エラー起きても止まらず次のバッチへ
+            print(f"Batch Error: {e}")
+            continue
+            
+    return results
 
 def extract_keywords(df):
     if df.empty: return []
     text = " ".join(df['text'].tolist()).lower()
-    ignore = ['to', 'in', 'for', 'of', 'the', 'on', 'and', 'a', 'is', 'at', 'bitcoin', 'crypto', 'price', 'market', 'btc', 'after', 'as', 'with', 'from', 'by', 'vs', 'new', 'top', 'why', 'will', 'news', 'analysis', 'live', '-', '|', 'cryptocurrency', 'says']
+    ignore = ['to', 'in', 'for', 'of', 'the', 'on', 'and', 'a', 'is', 'at', 'bitcoin', 'crypto', 'price', 'market', 'btc', 'after', 'as', 'with', 'from', 'by', 'vs', 'new', 'top', 'why', 'will', 'news', 'analysis', 'live', '-', '|', 'cryptocurrency', 'says', 'update', 'daily']
     words = re.findall(r'\b\w{3,}\b', text)
     filtered = [w for w in words if w not in ignore and not w.isdigit()]
     return Counter(filtered).most_common(8)
@@ -209,8 +204,6 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
         # Parallel-ish Fetching
         btc_price, btc_change, btc_chart = get_crypto_price()
         fng_val, fng_class = get_fear_greed_index()
-        
-        # ★ここが変更点: 正規APIから取得
         raw_news = get_real_market_news(limit=25)
         
         # AI Analysis
@@ -220,7 +213,9 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
             if analyzed_data:
                 df = pd.DataFrame(analyzed_data)
             else:
-                df = pd.DataFrame(raw_news) # AI失敗時用
+                # AIが失敗してもニュースは表示する
+                df = pd.DataFrame(raw_news)
+                st.warning("AI Analysis partially failed due to traffic. Showing Raw Data.")
 
     # --- LAYOUT CONSTRUCTION ---
     
@@ -247,7 +242,7 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
                 <div class="kpi-sub">Market Mood</div>
             </div>""", unsafe_allow_html=True)
         else:
-            st.markdown(f"""<div class="glass-card"><div class="kpi-label">AI SENTIMENT</div><div class="kpi-value">--</div><div class="kpi-sub">NO SIGNAL</div></div>""", unsafe_allow_html=True)
+            st.markdown(f"""<div class="glass-card"><div class="kpi-label">AI SENTIMENT</div><div class="kpi-value">--</div><div class="kpi-sub">ANALYZING...</div></div>""", unsafe_allow_html=True)
 
     with col3:
         fng_col = "#00ff99" if fng_val > 50 else "#ff0055"
@@ -304,7 +299,7 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
             )
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No sentiment data to plot.")
+            st.info("Waiting for AI analysis results...")
 
     # ROW 3: ANALYSIS
     c_kw, c_pie = st.columns(2)
@@ -331,7 +326,7 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
             fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', font_color='#e0e0e0', height=300, margin=dict(t=0,b=0), showlegend=True)
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No emotion data.")
+            st.info("Waiting for AI analysis results...")
 
     # ROW 4: FEED
     st.subheader("📋 Intelligence Logs")
