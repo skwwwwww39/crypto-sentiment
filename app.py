@@ -4,11 +4,11 @@ import plotly.express as px
 import google.generativeai as genai
 import os
 import time
-import yfinance as yf # ★ここが新しい主役
+import feedparser # ★ここが新しい主役（ブロックされない）
 from datetime import datetime
 
-# --- 1. デザイン設定 (Cyberpunk UI) ---
-st.set_page_config(page_title="Crypto AI Core", layout="wide", page_icon="⚡")
+# --- 1. デザイン設定 ---
+st.set_page_config(page_title="Crypto RSS Sentinel", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
@@ -16,7 +16,6 @@ st.markdown("""
         background: radial-gradient(circle at center top, #1a0b2e 0%, #000000 100%);
         color: #e0e0e0;
     }
-    /* カードデザイン */
     .metric-card {
         background: rgba(255, 255, 255, 0.05);
         border: 1px solid rgba(189, 0, 255, 0.2);
@@ -38,12 +37,6 @@ st.markdown("""
         text-transform: uppercase;
         letter-spacing: 1.5px;
     }
-    .chart-desc {
-        font-size: 0.8rem;
-        color: #888;
-        text-align: center;
-        margin-bottom: 5px;
-    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -57,43 +50,45 @@ if api_key:
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel('gemini-flash-latest')
 
-# --- 3. データ取得 (Yahoo Finance) ---
-def get_yahoo_news():
+# --- 3. データ取得 (RSSフィード) ---
+def get_rss_news():
     """
-    Yahoo Financeからビットコイン関連の最新ニュースを取得する。
-    APIキー不要、制限なし、超安定。
+    Yahoo FinanceのRSSフィードからニュースを取得する。
+    API制限に引っかからない最強の方法。
     """
-    news_items = []
+    # Yahoo FinanceのBTCニュースフィード
+    rss_url = "https://finance.yahoo.com/rss/headline?s=BTC-USD"
+    
     status_container = st.empty()
-    status_container.info("📥 Connecting to Yahoo Finance Global Network...")
+    status_container.info("📡 Connecting to Global RSS Feed...")
     
     try:
-        # BTC-USDのニュースを取得
-        ticker = yf.Ticker("BTC-USD")
-        raw_news = ticker.news
+        feed = feedparser.parse(rss_url)
         
-        if not raw_news:
-            status_container.warning("No news found from Yahoo Finance.")
+        if not feed.entries:
+            status_container.warning("No entries found in RSS feed.")
             return []
             
-        for i, item in enumerate(raw_news):
+        news_items = []
+        for i, entry in enumerate(feed.entries):
             # 必要な情報を抽出
-            title = item.get('title', 'No Title')
-            publisher = item.get('publisher', 'Yahoo')
-            link = item.get('link', '#')
+            title = entry.title
+            link = entry.link
+            published = entry.published if 'published' in entry else "Recent"
             
-            # 日付処理 (UNIXタイムスタンプの場合がある)
-            pub_time = item.get('providerPublishTime', 0)
-            if pub_time:
-                date_str = datetime.fromtimestamp(pub_time).strftime('%Y-%m-%d %H:%M')
-            else:
-                date_str = "Recent"
+            # 日付の整形（読みやすくする）
+            try:
+                # RSSの日付形式を変換
+                dt = datetime.strptime(published, "%a, %d %b %Y %H:%M:%S %z")
+                date_str = dt.strftime("%Y-%m-%d %H:%M")
+            except:
+                date_str = published
 
             news_items.append({
                 "id": i,
                 "text": title,
                 "date": date_str,
-                "source": publisher,
+                "source": "Yahoo Finance RSS",
                 "link": link
             })
             
@@ -101,7 +96,7 @@ def get_yahoo_news():
         return news_items
         
     except Exception as e:
-        status_container.error(f"Yahoo Finance Error: {e}")
+        status_container.error(f"RSS Error: {e}")
         return []
 
 # --- 4. バッチ分析 ---
@@ -161,14 +156,14 @@ def analyze_batch(news_list):
     return results
 
 # --- 5. メインUI ---
-st.title("⚡ Crypto Sentiment Core (Yahoo Edition)")
-st.markdown("Fetching real-time market data via **Yahoo Finance** infrastructure.")
+st.title("⚡ Crypto Sentiment Core (RSS)")
+st.markdown("Fetching real-time data via **RSS Feeds** (Anti-Block Technology).")
 
 # ボタン
 if st.button("FETCH & ANALYZE 🔄", type="primary"):
     
     # 1. データ取得
-    raw_news = get_yahoo_news()
+    raw_news = get_rss_news()
     
     if not raw_news:
         st.error("❌ Failed to fetch data.")
@@ -208,7 +203,7 @@ if st.button("FETCH & ANALYZE 🔄", type="primary"):
             with c3:
                 st.markdown(f"""
                 <div class="metric-card">
-                    <div class="metric-label">News Analyzed</div>
+                    <div class="metric-label">Headlines Analyzed</div>
                     <div class="metric-value">{len(df)}</div>
                 </div>""", unsafe_allow_html=True)
 
@@ -219,14 +214,13 @@ if st.button("FETCH & ANALYZE 🔄", type="primary"):
 
             with col_left:
                 st.subheader("📊 Sentiment Spectrum")
-                st.markdown("<div class='chart-desc'>Left: Bearish | Right: Bullish</div>", unsafe_allow_html=True)
+                st.markdown("<div style='text-align:center; color:#888; margin-bottom:5px;'>Left: Bearish | Right: Bullish</div>", unsafe_allow_html=True)
                 
                 fig_bar = px.bar(
                     df, 
                     x="Score", 
-                    y="source", 
+                    y="text", # Y軸をタイトルに
                     color="Score",
-                    hover_data=["text"],
                     orientation='h',
                     color_continuous_scale=['#ff0055', '#bd00ff', '#00e5ff', '#00FF99'],
                     range_x=[-100, 100],
@@ -235,7 +229,7 @@ if st.button("FETCH & ANALYZE 🔄", type="primary"):
                     paper_bgcolor='rgba(0,0,0,0)', 
                     plot_bgcolor='rgba(0,0,0,0)', 
                     font_color='#e0c0ff',
-                    yaxis={'visible': True}
+                    yaxis={'visible': False} # タイトルが長いので隠す（ホバーで見れる）
                 )
                 st.plotly_chart(fig_bar, use_container_width=True)
 
@@ -262,6 +256,5 @@ if st.button("FETCH & ANALYZE 🔄", type="primary"):
 
             # 詳細リスト
             with st.expander(f"📋 View News List"):
-                # リンク付きで表示するための処理
                 for index, row in df.iterrows():
-                    st.markdown(f"**{row['source']}**: [{row['text']}]({row['link']}) - *{row['Label']} ({row['Score']})*")
+                    st.markdown(f"**{row['date']}**: [{row['text']}]({row['link']}) - *{row['Label']} ({row['Score']})*")

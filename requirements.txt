@@ -4,4 +4,4 @@ plotly
 google-generativeai
 python-dotenv
 requests
-yfinance
+feedparser
