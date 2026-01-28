@@ -2,131 +2,128 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import google.generativeai as genai
 import os
 import time
 import feedparser
+import requests
 from datetime import datetime
+from collections import Counter
+import re
 
-# --- 1. 超リッチなデザイン設定 (Cyberpunk UI) ---
-st.set_page_config(page_title="Cyberpunk Crypto Core", layout="wide", page_icon="🔮")
+# --- 1. Cyberpunk Design System ---
+st.set_page_config(page_title="Terminal: Crypto Sentinel", layout="wide", page_icon="⚡")
 
 st.markdown("""
 <style>
-    /* 全体の背景：深い没入感のあるグラデーション */
+    /* 没入感のあるダーク背景 */
     .stApp {
-        background: radial-gradient(circle at center top, #1a0b2e 0%, #000000 100%);
+        background-color: #050505;
+        background-image: radial-gradient(circle at 50% 0%, #1a0b2e 0%, #000000 60%);
         color: #e0e0e0;
-        font-family: 'Helvetica Neue', sans-serif;
     }
     
-    /* アニメーション定義 */
-    @keyframes fadeUp {
-        from { opacity: 0; transform: translateY(20px); }
-        to { opacity: 1; transform: translateY(0); }
+    /* グラスモーフィズムカード */
+    .glass-card {
+        background: rgba(255, 255, 255, 0.03);
+        backdrop-filter: blur(10px);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 12px;
+        padding: 20px;
+        margin-bottom: 15px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+        transition: transform 0.2s;
     }
-    @keyframes pulse {
-        0% { box-shadow: 0 0 0 0 rgba(189, 0, 255, 0.4); }
-        70% { box-shadow: 0 0 0 10px rgba(189, 0, 255, 0); }
-        100% { box-shadow: 0 0 0 0 rgba(189, 0, 255, 0); }
+    .glass-card:hover {
+        border-color: rgba(0, 229, 255, 0.3);
+        box-shadow: 0 0 15px rgba(0, 229, 255, 0.1);
     }
 
-    /* ガラス調カードデザイン */
-    .metric-card {
-        background: rgba(20, 20, 35, 0.6);
-        backdrop-filter: blur(12px);
-        -webkit-backdrop-filter: blur(12px);
-        border: 1px solid rgba(189, 0, 255, 0.3);
-        border-radius: 16px;
-        padding: 24px;
-        text-align: center;
-        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.5);
-        transition: transform 0.3s ease, box-shadow 0.3s ease;
-        animation: fadeUp 0.6s ease-out forwards;
-        margin-bottom: 20px;
-        position: relative;
-        overflow: hidden;
-    }
-    
-    /* カードのホバーエフェクト */
-    .metric-card:hover {
-        transform: translateY(-5px);
-        border-color: #00e5ff;
-        box-shadow: 0 0 20px rgba(0, 229, 255, 0.4);
-    }
-    
-    /* カード内のテキスト */
-    .metric-label {
-        color: #b39ddb;
-        font-size: 0.85rem;
-        text-transform: uppercase;
-        letter-spacing: 2px;
-        margin-bottom: 8px;
-    }
-    .metric-value {
-        font-size: 2.8rem;
-        font-weight: 800;
-        background: linear-gradient(135deg, #fff 0%, #a0a0a0 100%);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        text-shadow: 0 0 20px rgba(189, 0, 255, 0.5);
-    }
-    .metric-sub {
-        font-size: 0.8rem;
-        color: #00e5ff;
-        margin-top: 5px;
-    }
+    /* ネオンテキスト */
+    .neon-text-purple { color: #bd00ff; text-shadow: 0 0 10px rgba(189, 0, 255, 0.6); }
+    .neon-text-cyan { color: #00e5ff; text-shadow: 0 0 10px rgba(0, 229, 255, 0.6); }
+    .neon-text-green { color: #00ff99; text-shadow: 0 0 10px rgba(0, 255, 153, 0.6); }
+    .neon-text-red { color: #ff0055; text-shadow: 0 0 10px rgba(255, 0, 85, 0.6); }
 
-    /* ボタンデザイン */
+    /* KPI数値 */
+    .kpi-value { font-size: 2.2rem; font-weight: 800; color: #fff; line-height: 1.2; }
+    .kpi-label { font-size: 0.8rem; color: #888; text-transform: uppercase; letter-spacing: 1px; }
+    
+    /* ボタン */
     .stButton > button {
-        background: linear-gradient(90deg, #bd00ff, #00e5ff);
-        border: none;
+        background: linear-gradient(90deg, #240046, #bd00ff);
+        border: 1px solid #bd00ff;
         color: white;
         font-weight: bold;
-        padding: 12px 30px;
-        border-radius: 30px;
-        box-shadow: 0 0 15px rgba(189, 0, 255, 0.6);
+        padding: 10px 25px;
+        border-radius: 4px;
         transition: all 0.3s;
-        width: 100%;
         text-transform: uppercase;
-        letter-spacing: 1px;
+        letter-spacing: 2px;
+        width: 100%;
     }
     .stButton > button:hover {
-        transform: scale(1.02);
-        box-shadow: 0 0 30px rgba(0, 229, 255, 0.8);
-    }
-
-    /* タイトル装飾 */
-    h1 {
-        text-align: center;
-        font-weight: 900;
-        letter-spacing: -1px;
-        background: linear-gradient(to right, #bd00ff, #00e5ff);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        margin-bottom: 40px;
-        filter: drop-shadow(0 0 10px rgba(189,0,255,0.5));
+        box-shadow: 0 0 20px rgba(189, 0, 255, 0.5);
+        background: #bd00ff;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. API設定 ---
+# --- 2. API Config ---
 try:
     api_key = st.secrets["GEMINI_API_KEY"]
 except:
     api_key = os.getenv("GEMINI_API_KEY")
 
 if not api_key:
-    st.error("🚨 APIキーが見つかりません。")
+    st.error("🚨 SYSTEM HALTED: Missing API Key.")
     st.stop()
 
 genai.configure(api_key=api_key)
-# ★無料枠が多いLiteモデル
-model_name = 'gemini-flash-lite-latest' 
-model = genai.GenerativeModel(model_name)
+model = genai.GenerativeModel('gemini-flash-lite-latest')
 
-# --- 3. データ取得 (RSS - Yahoo Finance) ---
-def get_rss_news(limit=25): # 情報量を増やすため25件に増量
+# --- 3. Data Fetching Modules ---
+
+# [A] CoinGecko: BTC Price & Chart (Cache 5 min)
+@st.cache_data(ttl=300)
+def get_crypto_price():
+    try:
+        # 価格データの取得
+        url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true"
+        r = requests.get(url, timeout=5)
+        data = r.json()
+        price = data['bitcoin']['usd']
+        change = data['bitcoin']['usd_24h_change']
+        
+        # チャートデータの取得 (7日間)
+        chart_url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=7"
+        r_chart = requests.get(chart_url, timeout=5)
+        chart_data = r_chart.json()
+        prices = chart_data['prices'] # [timestamp, price]
+        
+        df_chart = pd.DataFrame(prices, columns=['timestamp', 'price'])
+        df_chart['timestamp'] = pd.to_datetime(df_chart['timestamp'], unit='ms')
+        
+        return price, change, df_chart
+    except:
+        return None, None, pd.DataFrame()
+
+# [B] Alternative.me: Fear & Greed Index (Cache 1 hour)
+@st.cache_data(ttl=3600)
+def get_fear_greed_index():
+    try:
+        url = "https://api.alternative.me/fng/"
+        r = requests.get(url, timeout=5)
+        data = r.json()
+        value = int(data['data'][0]['value'])
+        classification = data['data'][0]['value_classification']
+        return value, classification
+    except:
+        return 50, "Neutral"
+
+# [C] Yahoo Finance RSS: News
+def get_rss_news(limit=30): 
     rss_url = "https://finance.yahoo.com/rss/headline?s=BTC-USD"
     try:
         feed = feedparser.parse(rss_url)
@@ -135,201 +132,216 @@ def get_rss_news(limit=25): # 情報量を増やすため25件に増量
         for i, entry in enumerate(feed.entries[:limit]):
             title = entry.title
             link = entry.link
-            published = entry.published if 'published' in entry else "Recent"
+            published = entry.published if 'published' in entry else datetime.now().strftime("%a, %d %b %Y %H:%M:%S +0000")
+            
+            # Timestamp for sorting
             try:
-                dt = datetime.strptime(published, "%a, %d %b %Y %H:%M:%S %z")
-                date_str = dt.strftime("%Y-%m-%d %H:%M")
+                dt_obj = datetime.strptime(published, "%a, %d %b %Y %H:%M:%S %z")
             except:
-                date_str = published
-            news_items.append({"id": i, "text": title, "date": date_str, "source": "Yahoo Finance", "link": link})
+                dt_obj = datetime.now()
+
+            news_items.append({
+                "id": i, 
+                "text": title, 
+                "date_str": dt_obj.strftime("%Y-%m-%d %H:%M"),
+                "timestamp": dt_obj,
+                "source": "Yahoo Fin", 
+                "link": link
+            })
         return news_items
-    except Exception as e:
-        st.error(f"RSS Error: {e}")
+    except:
         return []
 
-# --- 4. 一括分析 ---
-def analyze_all_at_once(news_list):
+# --- 4. Analytics Modules ---
+
+def analyze_sentiment(news_list):
     if not news_list: return []
-    results = []
-    news_text_block = "\n".join([f"ID {item['id']}: {item['text']}" for item in news_list])
+    news_block = "\n".join([f"ID {item['id']}: {item['text']}" for item in news_list])
     
-    # プロンプト：より厳密なJSON形式のような出力を要求
     prompt = f"""
-    Analyze sentiment of these {len(news_list)} crypto headlines.
-    Return ONLY a list: ID | Label | Score
-    Label options: [Despair, Fear, Negative, Positive, Optimism, Euphoria]
-    Score: -100 to 100
+    Analyze sentiment of {len(news_list)} crypto headlines.
+    Output JSON list: ID, Label (Euphoria, Optimism, Positive, Neutral, Negative, Fear, Despair), Score (-100 to 100).
+    Format: ID|Label|Score
     
     Headlines:
-    {news_text_block}
+    {news_block}
     """
     try:
-        response = model.generate_content(prompt)
-        if not response.text: return []
-        lines = response.text.strip().split("\n")
-        for line in lines:
+        res = model.generate_content(prompt)
+        if not res.text: return []
+        
+        results = []
+        for line in res.text.strip().split("\n"):
             parts = line.split("|")
             if len(parts) == 3:
                 try:
-                    n_id = int(parts[0].replace("ID", "").strip())
+                    nid = int(parts[0].replace("ID", "").strip())
                     label = parts[1].strip()
                     score = int(parts[2].strip())
                     for item in news_list:
-                        if item['id'] == n_id:
+                        if item['id'] == nid:
                             item['Label'] = label
                             item['Score'] = score
                             results.append(item)
-                except:
-                    continue
+                except: continue
         return results
-    except Exception as e:
-        st.error(f"AI Error: {e}")
-        return []
+    except: return []
 
-# --- 5. メインUI ---
-st.title("🔮 CYBERPUNK SENTIMENT CORE")
-st.markdown(f"<div style='text-align: center; color: #666; margin-top: -20px; margin-bottom: 30px;'>SYSTEM: ONLINE | MODEL: {model_name} | SOURCE: YAHOO FINANCE GLOBAL</div>", unsafe_allow_html=True)
+def extract_keywords(df):
+    """ニュースタイトルから頻出単語を抽出"""
+    text = " ".join(df['text'].tolist()).lower()
+    # 簡易的なストップワード除去
+    ignore = ['to', 'in', 'for', 'of', 'the', 'on', 'and', 'a', 'is', 'at', 'bitcoin', 'crypto', 'price', 'market', 'btc', 'after', 'as', 'with', 'from', 'by']
+    words = re.findall(r'\b\w{3,}\b', text)
+    filtered = [w for w in words if w not in ignore and not w.isdigit()]
+    return Counter(filtered).most_common(10)
 
-if st.button("INITIALIZE SCAN sequence 🔄", type="primary"):
-    
-    with st.spinner("📡 INTERCEPTING GLOBAL MARKET SIGNALS..."):
-        raw_news = get_rss_news(limit=20) # 20件取得
+# --- 5. Main Dashboard UI ---
+
+st.title("⚡ TRADER'S COCKPIT: BTC SENTINEL")
+st.markdown("REAL-TIME MARKET INTELLIGENCE // AI-POWERED ANALYSIS")
+
+if st.button("🔄 REFRESH DATA FEED", type="primary"):
+    with st.spinner("📡 ESTABLISHING UPLINK..."):
+        # 1. Fetch External Data (Parallel-ish)
+        btc_price, btc_change, btc_chart = get_crypto_price()
+        fng_val, fng_class = get_fear_greed_index()
+        raw_news = get_rss_news(limit=25)
         
-        if not raw_news:
-            st.error("SIGNAL LOST.")
+        # 2. AI Analysis
+        if raw_news:
+            analyzed_data = analyze_sentiment(raw_news)
+            df = pd.DataFrame(analyzed_data)
         else:
-            analyzed_data = analyze_all_at_once(raw_news)
+            df = pd.DataFrame()
+
+        # --- LAYOUT CONSTRUCTION ---
+        
+        # --- ROW 1: KEY MARKET METRICS (4 Columns) ---
+        col1, col2, col3, col4 = st.columns(4)
+        
+        # Card 1: BTC Price
+        with col1:
+            price_color = "#00ff99" if btc_change and btc_change >= 0 else "#ff0055"
+            st.markdown(f"""
+            <div class="glass-card">
+                <div class="kpi-label">BTC / USD</div>
+                <div class="kpi-value">${btc_price:,.0f}</div>
+                <div style="color: {price_color}; font-weight:bold;">{btc_change:+.2f}% (24h)</div>
+            </div>""", unsafe_allow_html=True)
             
-            if not analyzed_data:
-                st.warning("NO DATA DECODED.")
-                df = pd.DataFrame(raw_news)
+        # Card 2: AI Sentiment Score
+        with col2:
+            if not df.empty:
+                ai_score = df['Score'].mean()
+                ai_color = "#00ff99" if ai_score > 0 else "#ff0055"
+                st.markdown(f"""
+                <div class="glass-card">
+                    <div class="kpi-label">AI SENTIMENT</div>
+                    <div class="kpi-value" style="color:{ai_color}">{int(ai_score)}</div>
+                    <div style="font-size:0.8rem; color:#888;">-100 (Bear) to 100 (Bull)</div>
+                </div>""", unsafe_allow_html=True)
             else:
-                df = pd.DataFrame(analyzed_data)
+                st.markdown("<div class='glass-card'>NO DATA</div>", unsafe_allow_html=True)
 
-            # --- KPI 計算 ---
-            avg_score = df['Score'].mean()
-            post_count = len(df)
-            
-            # ムード判定
-            if avg_score >= 60: mood, color, icon = "EUPHORIA", "#00FF99", "🚀"
-            elif avg_score >= 20: mood, color, icon = "OPTIMISM", "#00e5ff", "📈"
-            elif avg_score <= -60: mood, color, icon = "DESPAIR", "#ff0055", "💀"
-            elif avg_score <= -20: mood, color, icon = "FEAR", "#ff5e00", "😱"
-            else: mood, color, icon = "NEUTRAL", "#bd00ff", "😐"
-            
-            # 最もポジティブ/ネガティブなニュース
-            top_bull = df.loc[df['Score'].idxmax()]
-            top_bear = df.loc[df['Score'].idxmin()]
+        # Card 3: Fear & Greed (Official)
+        with col3:
+            fng_color = "#00ff99" if fng_val > 50 else "#ff0055"
+            st.markdown(f"""
+            <div class="glass-card">
+                <div class="kpi-label">FEAR & GREED (OFFICIAL)</div>
+                <div class="kpi-value" style="color:{fng_color}">{fng_val}</div>
+                <div style="color:{fng_color}">{fng_class}</div>
+            </div>""", unsafe_allow_html=True)
 
-            # --- 上部 KPI カード (4枚構成) ---
-            c1, c2, c3, c4 = st.columns(4)
-            
-            with c1:
-                st.markdown(f"""
-                <div class="metric-card">
-                    <div class="metric-label">Market Mood</div>
-                    <div class="metric-value" style="color: {color}; text-shadow: 0 0 15px {color};">{mood}</div>
-                    <div class="metric-sub">{icon} System Status</div>
-                </div>""", unsafe_allow_html=True)
-                
-            with c2:
-                st.markdown(f"""
-                <div class="metric-card" style="animation-delay: 0.1s;">
-                    <div class="metric-label">Sentiment Score</div>
-                    <div class="metric-value">{int(avg_score)}</div>
-                    <div class="metric-sub">Range: -100 to 100</div>
-                </div>""", unsafe_allow_html=True)
+        # Card 4: Signal Strength
+        with col4:
+            count = len(df) if not df.empty else 0
+            st.markdown(f"""
+            <div class="glass-card">
+                <div class="kpi-label">NEWS VOLUME</div>
+                <div class="kpi-value">{count}</div>
+                <div style="font-size:0.8rem; color:#00e5ff;">Sources Analyzed</div>
+            </div>""", unsafe_allow_html=True)
 
-            with c3:
-                st.markdown(f"""
-                <div class="metric-card" style="animation-delay: 0.2s;">
-                    <div class="metric-label">Signal Density</div>
-                    <div class="metric-value">{post_count}</div>
-                    <div class="metric-sub">Packets Analyzed</div>
-                </div>""", unsafe_allow_html=True)
-                
-            with c4:
-                # 勢い（ボラティリティ的なもの）を簡易計算
-                volatility = df['Score'].std()
-                st.markdown(f"""
-                <div class="metric-card" style="animation-delay: 0.3s;">
-                    <div class="metric-label">Volatility Index</div>
-                    <div class="metric-value">{int(volatility) if not pd.isna(volatility) else 0}</div>
-                    <div class="metric-sub">Sentiment Deviation</div>
-                </div>""", unsafe_allow_html=True)
-
-            # --- グラフセクション ---
-            col_graph_left, col_graph_right = st.columns([2, 1])
-
-            with col_graph_left:
-                st.markdown("### 📊 Sentiment Spectrum Analysis")
-                # バーチャート
-                fig_bar = px.bar(
-                    df, y="text", x="Score", orientation='h', color="Score",
-                    color_continuous_scale=['#ff0055', '#bd00ff', '#00e5ff', '#00FF99'],
-                    range_x=[-100, 100], text="Label"
-                )
-                fig_bar.update_layout(
+        # --- ROW 2: CHARTS (Price Trend & Sentiment Trend) ---
+        c_chart1, c_chart2 = st.columns([2, 1])
+        
+        with c_chart1:
+            st.subheader("📈 BTC Price Action (7 Days)")
+            if not btc_chart.empty:
+                fig_price = px.line(btc_chart, x='timestamp', y='price', line_shape='spline')
+                fig_price.update_traces(line_color='#00e5ff', line_width=3)
+                fig_price.update_layout(
                     paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                    font=dict(color='#e0e0e0', family="Arial"),
-                    yaxis=dict(showticklabels=False), # テキストが長いのでY軸ラベルは隠す
-                    xaxis=dict(gridcolor='rgba(255,255,255,0.1)'),
-                    margin=dict(l=0, r=0, t=0, b=0),
-                    height=350
+                    font_color='#888',
+                    xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)'),
+                    height=300, margin=dict(l=0, r=0, t=10, b=0)
                 )
-                fig_bar.update_traces(textposition='inside')
-                st.plotly_chart(fig_bar, use_container_width=True)
-
-            with col_graph_right:
-                st.markdown("### 🥧 Emotion Distribution")
-                # ドーナツチャート（Plotly Graph Objectsでリッチに）
-                labels = df['Label'].value_counts().index
-                values = df['Label'].value_counts().values
-                colors = {'Euphoria': '#00FF99', 'Optimism': '#00e5ff', 'Positive': '#3498DB', 
-                          'Neutral': '#bd00ff', 'Negative': '#F1C40F', 'Fear': '#ff5e00', 'Despair': '#ff0055'}
-                marker_colors = [colors.get(l, '#888') for l in labels]
-
-                fig_pie = go.Figure(data=[go.Pie(
-                    labels=labels, values=values, hole=.5,
-                    marker=dict(colors=marker_colors, line=dict(color='#000000', width=2))
-                )])
-                fig_pie.update_layout(
-                    paper_bgcolor='rgba(0,0,0,0)',
-                    font=dict(color='#e0e0e0'),
-                    margin=dict(l=20, r=20, t=0, b=0),
-                    height=350,
-                    showlegend=True,
-                    legend=dict(orientation="h", y=-0.1)
+                st.plotly_chart(fig_price, use_container_width=True)
+        
+        with c_chart2:
+            st.subheader("🌊 Intraday Sentiment Flow")
+            if not df.empty:
+                # タイムスタンプでソートしてセンチメントの推移を表示
+                df_sorted = df.sort_values('timestamp')
+                fig_sent_trend = px.line(df_sorted, x='timestamp', y='Score', markers=True, title=None)
+                fig_sent_trend.update_traces(line_color='#bd00ff', line_width=2)
+                fig_sent_trend.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.3)
+                fig_sent_trend.update_layout(
+                    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+                    font_color='#888',
+                    xaxis=dict(showticklabels=False), yaxis=dict(range=[-100, 100]),
+                    height=300, margin=dict(l=0, r=0, t=10, b=0)
                 )
+                st.plotly_chart(fig_sent_trend, use_container_width=True)
+
+        # --- ROW 3: DEEP DIVE (Keywords & Distribution) ---
+        c_deep1, c_deep2 = st.columns(2)
+        
+        with c_deep1:
+            st.subheader("🗣 Market Narrative (Top Keywords)")
+            if not df.empty:
+                keywords = extract_keywords(df)
+                kw_df = pd.DataFrame(keywords, columns=['word', 'count'])
+                fig_kw = px.bar(kw_df, x='count', y='word', orientation='h', color='count', color_continuous_scale='Viridis')
+                fig_kw.update_layout(
+                    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color='#e0e0e0',
+                    yaxis={'categoryorder':'total ascending'}, height=300
+                )
+                st.plotly_chart(fig_kw, use_container_width=True)
+                
+        with c_deep2:
+            st.subheader("🥧 Emotion Ratio")
+            if not df.empty:
+                color_map = {'Euphoria': '#00FF99', 'Optimism': '#00e5ff', 'Positive': '#3498DB', 'Neutral': '#888', 'Negative': '#F1C40F', 'Fear': '#ff5e00', 'Despair': '#ff0055'}
+                fig_pie = px.pie(df, names='Label', hole=0.5, color='Label', color_discrete_map=color_map)
+                fig_pie.update_layout(paper_bgcolor='rgba(0,0,0,0)', font_color='#e0e0e0', height=300)
                 st.plotly_chart(fig_pie, use_container_width=True)
 
-            # --- 詳細ニュースリスト (情報過多デザイン) ---
-            st.markdown("### 📋 DECODED INTELLIGENCE LOGS")
-            
+        # --- ROW 4: RAW INTEL ---
+        st.subheader("📋 Raw Intelligence Feed")
+        if not df.empty:
             for index, row in df.iterrows():
-                # スコアに応じた色
-                s_color = "#00FF99" if row['Score'] > 20 else "#ff0055" if row['Score'] < -20 else "#bd00ff"
-                
-                # HTMLでリッチなリスト表示
+                score_color = "#00ff99" if row['Score'] > 0 else "#ff0055"
                 st.markdown(f"""
-                <div style="
-                    background: rgba(255,255,255,0.03); 
-                    border-left: 4px solid {s_color};
-                    padding: 15px; 
-                    margin-bottom: 10px; 
-                    border-radius: 4px;
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;">
-                    <div>
-                        <div style="font-size: 0.8rem; color: #888;">{row['date']} | ID: {row['id']}</div>
-                        <div style="font-size: 1.1rem; font-weight: bold; color: #fff;">
-                            <a href="{row['link']}" target="_blank" style="text-decoration: none; color: #fff;">{row['text']}</a>
-                        </div>
+                <div style="border-bottom: 1px solid rgba(255,255,255,0.1); padding: 10px 0; display:flex; justify-content:space-between; align-items:center;">
+                    <div style="flex-grow:1;">
+                        <span style="color:#666; font-size:0.8rem;">{row['date_str']}</span><br>
+                        <a href="{row['link']}" style="color:#e0e0e0; text-decoration:none; font-weight:bold; font-size:1.1rem;">{row['text']}</a>
                     </div>
-                    <div style="text-align: right; min-width: 100px;">
-                        <div style="font-size: 1.2rem; font-weight: bold; color: {s_color};">{row['Label']}</div>
-                        <div style="font-size: 0.9rem; color: #aaa;">Score: {row['Score']}</div>
+                    <div style="text-align:right; min-width:80px;">
+                        <span style="color:{score_color}; font-weight:bold; font-size:1.2rem;">{row['Score']}</span><br>
+                        <span style="color:#888; font-size:0.8rem;">{row['Label']}</span>
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
+
+else:
+    # 待機画面
+    st.markdown("""
+    <div style="text-align:center; padding: 50px; opacity: 0.7;">
+        <h1>SYSTEM READY</h1>
+        <p>Awaiting operator command to initialize scan...</p>
+    </div>
+    """, unsafe_allow_html=True)
