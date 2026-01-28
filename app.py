@@ -14,14 +14,11 @@ st.set_page_config(page_title="Terminal: Crypto Sentinel", layout="wide", page_i
 
 st.markdown("""
 <style>
-    /* 没入感のあるダーク背景 */
     .stApp {
         background-color: #050505;
         background-image: radial-gradient(circle at 50% 0%, #1a0b2e 0%, #000000 60%);
         color: #e0e0e0;
     }
-    
-    /* グラスモーフィズムカード */
     .glass-card {
         background: rgba(255, 255, 255, 0.03);
         backdrop-filter: blur(10px);
@@ -30,24 +27,15 @@ st.markdown("""
         padding: 20px;
         margin-bottom: 15px;
         box-shadow: 0 4px 20px rgba(0,0,0,0.4);
-        transition: transform 0.2s;
-        height: 100%;
         display: flex;
         flex-direction: column;
         justify-content: center;
+        height: 100%;
     }
-    .glass-card:hover {
-        border-color: rgba(0, 229, 255, 0.3);
-        box-shadow: 0 0 15px rgba(0, 229, 255, 0.1);
-        transform: translateY(-2px);
-    }
-
-    /* KPI数値 */
     .kpi-value { font-size: 2.2rem; font-weight: 800; color: #fff; line-height: 1.2; }
     .kpi-label { font-size: 0.8rem; color: #888; text-transform: uppercase; letter-spacing: 1px; }
     .kpi-sub { font-size: 0.8rem; margin-top: 5px; opacity: 0.8; }
     
-    /* ボタン */
     .stButton > button {
         background: linear-gradient(90deg, #bd00ff, #240046);
         border: 1px solid #bd00ff;
@@ -55,14 +43,7 @@ st.markdown("""
         font-weight: bold;
         padding: 12px 25px;
         border-radius: 4px;
-        transition: all 0.3s;
-        text-transform: uppercase;
-        letter-spacing: 2px;
         width: 100%;
-    }
-    .stButton > button:hover {
-        box-shadow: 0 0 20px rgba(189, 0, 255, 0.5);
-        background: #bd00ff;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -78,10 +59,9 @@ if not api_key:
     st.stop()
 
 genai.configure(api_key=api_key)
-# 指定のLiteモデルを使用
 model = genai.GenerativeModel('gemini-flash-lite-latest')
 
-# --- 3. Data Fetching (CryptoCompare) ---
+# --- 3. Data Fetching ---
 
 @st.cache_data(ttl=300)
 def get_crypto_price():
@@ -98,7 +78,6 @@ def get_crypto_price():
         df_chart = pd.DataFrame(chart_data['prices'], columns=['timestamp', 'price'])
         df_chart['timestamp'] = pd.to_datetime(df_chart['timestamp'], unit='ms')
         df_chart['SMA'] = df_chart['price'].rolling(window=24).mean()
-        
         return price, change, df_chart
     except:
         return 0, 0, pd.DataFrame()
@@ -138,13 +117,11 @@ def get_real_market_news(limit=25):
         st.error(f"API Error: {e}")
         return []
 
-# --- 4. Analytics Modules ---
+# --- 4. Analytics Modules (Robust Parsing) ---
 
 def analyze_sentiment(news_list):
     if not news_list: return []
-    
     results = []
-    # バッチ処理
     batch_size = 10
     
     for i in range(0, len(news_list), batch_size):
@@ -153,10 +130,10 @@ def analyze_sentiment(news_list):
         
         prompt = f"""
         Analyze sentiment of these {len(batch)} crypto headlines.
-        Return ONLY a list in this exact format: ID|Label|Score
-        Label must be one of: [Euphoria, Optimism, Positive, Neutral, Negative, Fear, Despair]
-        Score is integer from -100 to 100.
-        Do not use markdown.
+        Return ONLY a list in format: ID|Label|Score
+        Label: [Euphoria, Optimism, Positive, Neutral, Negative, Fear, Despair]
+        Score: -100 to 100
+        NO Markdown. NO bolding.
         
         Headlines:
         {news_block}
@@ -165,28 +142,36 @@ def analyze_sentiment(news_list):
             res = model.generate_content(prompt)
             if not res.text: continue
             
-            for line in res.text.strip().split("\n"):
-                match = re.search(r'(\d+)\s*\|\s*([A-Za-z]+)\s*\|\s*(-?\d+)', line)
-                if match:
-                    nid = int(match.group(1))
-                    label = match.group(2)
-                    score = int(match.group(3))
-                    
-                    found_item = None
-                    for item in news_list:
-                        if item['id'] == nid:
-                            found_item = item.copy()
-                            found_item['Label'] = label
-                            found_item['Score'] = score
-                            break
-                    
-                    if found_item:
-                        results.append(found_item)
-
+            # ★修正点：正規表現をやめて、泥臭くパースする（データ消失防止）
+            lines = res.text.strip().split("\n")
+            for line in lines:
+                parts = line.split("|")
+                if len(parts) >= 3:
+                    try:
+                        # 余計な文字（*やスペース）を削除して読み込む
+                        nid_str = re.sub(r'\D', '', parts[0]) # 数字以外消す
+                        if not nid_str: continue
+                        nid = int(nid_str)
+                        
+                        label = parts[1].strip().replace("*", "")
+                        
+                        score_str = parts[2].strip().replace("*", "")
+                        score = int(float(score_str)) # "90.0" とか来てもいいように
+                        
+                        # IDで紐付け
+                        for item in news_list:
+                            if item['id'] == nid:
+                                # 新しい辞書を作って追加（安全策）
+                                new_item = item.copy()
+                                new_item['Label'] = label
+                                new_item['Score'] = score
+                                results.append(new_item)
+                                break
+                    except:
+                        continue
         except Exception as e:
             print(f"Batch Error: {e}")
             continue
-            
     return results
 
 def extract_keywords(df):
@@ -203,182 +188,99 @@ st.title("⚡ TRADER'S COCKPIT: BTC SENTINEL")
 st.markdown("REAL-TIME MARKET INTELLIGENCE // CRYPTOCOMPARE API FEED")
 
 if st.button("🔄 REFRESH DATA FEED", type="primary"):
-    with st.spinner("📡 ESTABLISHING SECURE UPLINK..."):
-        # Parallel-ish Fetching
+    with st.spinner("📡 PROCESSING DATA..."):
         btc_price, btc_change, btc_chart = get_crypto_price()
         fng_val, fng_class = get_fear_greed_index()
         raw_news = get_real_market_news(limit=25)
         
-        # AI Analysis
         df = pd.DataFrame()
         if raw_news:
             analyzed_data = analyze_sentiment(raw_news)
+            # データが取れなかった場合（解析失敗時）は生データを表示
             if analyzed_data:
                 df = pd.DataFrame(analyzed_data)
             else:
                 df = pd.DataFrame(raw_news)
-                st.warning("AI Analysis partially failed due to traffic. Showing Raw Data.")
+                st.warning("Sentiment analysis unavailable. Displaying raw feed.")
 
-    # --- LAYOUT CONSTRUCTION ---
-    
-    # ROW 1: KPI CARDS
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        price_col = "#00ff99" if btc_change >= 0 else "#ff0055"
-        st.markdown(f"""
-        <div class="glass-card">
-            <div class="kpi-label">BTC PRICE</div>
-            <div class="kpi-value">${btc_price:,.0f}</div>
-            <div class="kpi-sub" style="color:{price_col}">{btc_change:+.2f}% (24h)</div>
-        </div>""", unsafe_allow_html=True)
-        
-    with col2:
+    # --- LAYOUT ---
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        p_col = "#00ff99" if btc_change >= 0 else "#ff0055"
+        st.markdown(f"<div class='glass-card'><div class='kpi-label'>BTC PRICE</div><div class='kpi-value'>${btc_price:,.0f}</div><div class='kpi-sub' style='color:{p_col}'>{btc_change:+.2f}%</div></div>", unsafe_allow_html=True)
+    with c2:
         if not df.empty and 'Score' in df.columns:
-            score = df['Score'].mean()
-            col = "#00ff99" if score > 20 else "#ff0055" if score < -20 else "#bd00ff"
-            st.markdown(f"""
-            <div class="glass-card">
-                <div class="kpi-label">AI SENTIMENT</div>
-                <div class="kpi-value" style="color:{col}">{int(score)}</div>
-                <div class="kpi-sub">Market Mood</div>
-            </div>""", unsafe_allow_html=True)
+            sc = df['Score'].mean()
+            col = "#00ff99" if sc > 20 else "#ff0055" if sc < -20 else "#bd00ff"
+            st.markdown(f"<div class='glass-card'><div class='kpi-label'>AI SENTIMENT</div><div class='kpi-value' style='color:{col}'>{int(sc)}</div><div class='kpi-sub'>Market Mood</div></div>", unsafe_allow_html=True)
         else:
-            st.markdown(f"""<div class="glass-card"><div class="kpi-label">AI SENTIMENT</div><div class="kpi-value">--</div><div class="kpi-sub">ANALYZING...</div></div>""", unsafe_allow_html=True)
+            st.markdown("<div class='glass-card'><div class='kpi-label'>AI SENTIMENT</div><div class='kpi-value'>--</div></div>", unsafe_allow_html=True)
+    with c3:
+        f_col = "#00ff99" if fng_val > 50 else "#ff0055"
+        st.markdown(f"<div class='glass-card'><div class='kpi-label'>FEAR & GREED</div><div class='kpi-value' style='color:{f_col}'>{fng_val}</div><div class='kpi-sub'>{fng_class}</div></div>", unsafe_allow_html=True)
+    with c4:
+        st.markdown(f"<div class='glass-card'><div class='kpi-label'>SIGNAL DENSITY</div><div class='kpi-value'>{len(df)}</div><div class='kpi-sub'>News Analyzed</div></div>", unsafe_allow_html=True)
 
-    with col3:
-        fng_col = "#00ff99" if fng_val > 50 else "#ff0055"
-        st.markdown(f"""
-        <div class="glass-card">
-            <div class="kpi-label">FEAR & GREED</div>
-            <div class="kpi-value" style="color:{fng_col}">{fng_val}</div>
-            <div class="kpi-sub">{fng_class}</div>
-        </div>""", unsafe_allow_html=True)
-
-    with col4:
-        count = len(df)
-        st.markdown(f"""
-        <div class="glass-card">
-            <div class="kpi-label">SIGNAL DENSITY</div>
-            <div class="kpi-value">{count}</div>
-            <div class="kpi-sub">Packets Processed</div>
-        </div>""", unsafe_allow_html=True)
-
-    # ROW 2: CHARTS
-    c_chart1, c_chart2 = st.columns([2, 1])
+    # --- CHARTS ---
+    c_left, c_right = st.columns([2, 1])
     
-    with c_chart1:
-        st.subheader("📈 Price Action + Trend")
+    with c_left:
+        st.subheader("📈 Price Action")
         if not btc_chart.empty:
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=btc_chart['timestamp'], y=btc_chart['price'], mode='lines', name='Price', line=dict(color='#00e5ff', width=2)))
-            if 'SMA' in btc_chart.columns:
-                fig.add_trace(go.Scatter(x=btc_chart['timestamp'], y=btc_chart['SMA'], mode='lines', name='MA(24h)', line=dict(color='#bd00ff', width=1, dash='dash')))
-            fig.update_layout(
-                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                font=dict(color='#888'), margin=dict(l=0, r=0, t=0, b=0), height=350,
-                xaxis=dict(showgrid=False), yaxis=dict(gridcolor='rgba(255,255,255,0.1)'),
-                legend=dict(orientation="h", y=1, x=0)
-            )
+            fig.add_trace(go.Scatter(x=btc_chart['timestamp'], y=btc_chart['price'], mode='lines', line=dict(color='#00e5ff', width=2)))
+            fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color='#888'), margin=dict(l=0,r=0,t=0,b=0), height=350, xaxis=dict(showgrid=False), yaxis=dict(showgrid=True, gridcolor='rgba(255,255,255,0.1)'))
             st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Price data unavailable.")
 
-    with c_chart2:
+    with c_right:
         st.subheader("🌊 Sentiment Flow")
+        # ★★★ グラフ修正の核心：時間統合とソート ★★★
         if not df.empty and 'Score' in df.columns and 'timestamp' in df.columns:
-            # ★★★ 修正箇所：強制型変換と厳密なソート ★★★
             chart_df = df.copy()
+            chart_df['timestamp'] = pd.to_datetime(chart_df['timestamp'])
             
-            # 1. タイムスタンプを強制的にdatetime型へ変換 (エラーは消す)
-            chart_df['timestamp'] = pd.to_datetime(chart_df['timestamp'], errors='coerce')
-            chart_df = chart_df.dropna(subset=['timestamp']) # 念のためNaNは消す
+            # 1. 同じ時間のデータを平均化して「1つの点」にする（ループ回避）
+            chart_df = chart_df.groupby('timestamp', as_index=False)['Score'].mean()
             
-            # 2. 時間でソートする (これが一番重要)
-            chart_df = chart_df.sort_values(by='timestamp', ascending=True)
+            # 2. 時間順にソート（逆行回避）
+            chart_df = chart_df.sort_values('timestamp')
             
-            # 3. Graph Objects (go.Scatter) を使って「点と点をつなぐ」
-            # px.areaなどの自動補正を使わず、生のデータをそのまま描画する
-            fig = go.Figure()
-            
-            fig.add_trace(go.Scatter(
-                x=chart_df['timestamp'], 
-                y=chart_df['Score'],
-                mode='lines+markers', # 点と線
-                line=dict(color='#00ff99', width=2, shape='linear'), # shape='linear'で直線にする（ループ回避）
-                fill='tozeroy',
-                fillcolor='rgba(0, 255, 153, 0.1)',
-                name='Sentiment'
-            ))
-
-            fig.update_layout(
-                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                font=dict(color='#888'), margin=dict(l=0, r=0, t=0, b=0), height=350,
-                yaxis=dict(range=[-100, 100], gridcolor='rgba(255,255,255,0.1)'), 
-                xaxis=dict(showticklabels=True, gridcolor='rgba(255,255,255,0.1)'), # 軸ラベルを表示して確認
-                showlegend=False
-            )
+            # 3. 直線で描画
+            fig = px.line(chart_df, x='timestamp', y='Score')
+            fig.update_traces(line_color='#00ff99', line_shape='linear', fill='tozeroy', fillcolor='rgba(0,255,153,0.1)')
+            fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color='#888'), margin=dict(l=0,r=0,t=0,b=0), height=350, xaxis=dict(showgrid=False), yaxis=dict(range=[-100,100], gridcolor='rgba(255,255,255,0.1)'))
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No sentiment data available.")
+            st.info("No data for chart.")
 
-    # ROW 3: ANALYSIS
+    # --- ANALYSIS ---
     c_kw, c_pie = st.columns(2)
-    
     with c_kw:
-        st.subheader("🗣 Market Narrative")
+        st.subheader("🗣 Narrative")
         if not df.empty:
-            keywords = extract_keywords(df)
-            if keywords:
-                kw_df = pd.DataFrame(keywords, columns=['word', 'count'])
-                fig = px.bar(kw_df, x='count', y='word', orientation='h', color='count', color_continuous_scale='Viridis')
-                fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color='#e0e0e0', yaxis={'categoryorder':'total ascending'}, height=300, margin=dict(t=0,b=0))
+            kw = extract_keywords(df)
+            if kw:
+                kdf = pd.DataFrame(kw, columns=['word','count'])
+                fig = px.bar(kdf, x='count', y='word', orientation='h', color='count', color_continuous_scale='Viridis')
+                fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color='#e0e0e0', height=300, margin=dict(t=0,b=0))
                 st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("Insufficient text for analysis.")
-        else:
-             st.info("No narrative data.")
-
+    
     with c_pie:
-        st.subheader("🥧 Emotion Ratio")
+        st.subheader("🥧 Emotions")
         if not df.empty and 'Label' in df.columns:
             cmap = {'Euphoria': '#00FF99', 'Optimism': '#00e5ff', 'Positive': '#3498DB', 'Neutral': '#555', 'Negative': '#F1C40F', 'Fear': '#ff5e00', 'Despair': '#ff0055'}
             fig = px.pie(df, names='Label', hole=0.6, color='Label', color_discrete_map=cmap)
-            fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', font_color='#e0e0e0', height=300, margin=dict(t=0,b=0), showlegend=True)
+            fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', font_color='#e0e0e0', height=300, margin=dict(t=0,b=0))
             st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No emotion data.")
 
-    # ROW 4: FEED
-    st.subheader("📋 Intelligence Logs")
+    # --- LOGS ---
+    st.subheader("📋 Logs")
     if not df.empty:
-        # ログは最新順（降順）
-        if 'timestamp' in df.columns:
-             df_log = df.sort_values(by='timestamp', ascending=False)
-        else:
-             df_log = df
-             
-        for idx, row in df_log.iterrows():
-            s_col = "#00ff99" if row.get('Score', 0) > 0 else "#ff0055" if row.get('Score', 0) < 0 else "#888"
-            date_display = row.get('date_str', 'Recent')
-            st.markdown(f"""
-            <div style="border-left: 3px solid {s_col}; padding-left: 15px; margin-bottom: 10px; background: rgba(255,255,255,0.02);">
-                <div style="font-size: 0.8rem; color: #666;">{date_display} | {row['source']}</div>
-                <div style="display:flex; justify-content:space-between; align-items:center;">
-                    <a href="{row['link']}" target="_blank" style="color: #eee; font-weight:bold; text-decoration:none; font-size:1rem;">{row['text']}</a>
-                    <div style="text-align:right;">
-                        <span style="color:{s_col}; font-weight:bold;">{row.get('Label', '-')}</span> <span style="font-size:0.8rem; color:#666;">({row.get('Score', 0)})</span>
-                    </div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-    else:
-        st.error("ALL SYSTEMS DOWN. Check connection.")
+        df_log = df.sort_values('timestamp', ascending=False) if 'timestamp' in df.columns else df
+        for _, row in df_log.iterrows():
+            sc = row.get('Score', 0)
+            c = "#00ff99" if sc > 0 else "#ff0055" if sc < 0 else "#888"
+            st.markdown(f"<div style='border-left:3px solid {c}; padding-left:10px; margin-bottom:5px; background:rgba(255,255,255,0.02)'><div>{row['date_str']} | {row['source']}</div><div style='display:flex; justify-content:space-between'><a href='{row['link']}' style='color:#eee; text-decoration:none'>{row['text']}</a><span style='color:{c}'>{row.get('Label','-')} ({sc})</span></div></div>", unsafe_allow_html=True)
 
 else:
-    st.markdown("""
-    <div style="text-align:center; padding: 100px; color:#444;">
-        <h1>SYSTEM STANDBY</h1>
-        <p>Click REFRESH to initialize market scan.</p>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown("<div style='text-align:center; padding:50px;'><h1>READY</h1><p>Click REFRESH</p></div>", unsafe_allow_html=True)
