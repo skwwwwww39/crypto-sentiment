@@ -1,7 +1,4 @@
 streamlit
 pandas
 plotly
-google-generativeai
-python-dotenv
-requests
-feedparser
+pdfplumber
