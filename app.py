@@ -5,7 +5,6 @@ import plotly.graph_objects as go
 import google.generativeai as genai
 import os
 import requests
-import feedparser
 from datetime import datetime
 import re
 from collections import Counter
@@ -33,10 +32,14 @@ st.markdown("""
         box-shadow: 0 4px 20px rgba(0,0,0,0.4);
         transition: transform 0.2s;
         height: 100%;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
     }
     .glass-card:hover {
         border-color: rgba(0, 229, 255, 0.3);
         box-shadow: 0 0 15px rgba(0, 229, 255, 0.1);
+        transform: translateY(-2px);
     }
 
     /* KPI数値 */
@@ -46,7 +49,7 @@ st.markdown("""
     
     /* ボタン */
     .stButton > button {
-        background: linear-gradient(90deg, #240046, #bd00ff);
+        background: linear-gradient(90deg, #bd00ff, #240046);
         border: 1px solid #bd00ff;
         color: white;
         font-weight: bold;
@@ -75,31 +78,26 @@ if not api_key:
     st.stop()
 
 genai.configure(api_key=api_key)
+# 無料枠が多いLiteモデル
 model = genai.GenerativeModel('gemini-flash-lite-latest')
 
-# --- 3. Robust Data Fetching (Multi-Source) ---
+# --- 3. Robust Data Fetching (CryptoCompare API) ---
 
 @st.cache_data(ttl=300)
 def get_crypto_price():
-    """CoinGeckoから価格と7日分のチャートを取得"""
+    """CoinGeckoから価格とチャート取得"""
     try:
-        # 価格
         url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true"
         r = requests.get(url, timeout=5)
         data = r.json()
         price = data['bitcoin']['usd']
         change = data['bitcoin']['usd_24h_change']
         
-        # チャート
         chart_url = "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=7"
         r_chart = requests.get(chart_url, timeout=5)
         chart_data = r_chart.json()
-        prices = chart_data['prices'] 
-        
-        df_chart = pd.DataFrame(prices, columns=['timestamp', 'price'])
+        df_chart = pd.DataFrame(chart_data['prices'], columns=['timestamp', 'price'])
         df_chart['timestamp'] = pd.to_datetime(df_chart['timestamp'], unit='ms')
-        
-        # 移動平均線 (SMA) を計算してプロっぽくする
         df_chart['SMA'] = df_chart['price'].rolling(window=24).mean()
         
         return price, change, df_chart
@@ -118,68 +116,45 @@ def get_fear_greed_index():
     except:
         return 50, "Neutral"
 
-def get_rss_news_robust(limit=30):
+def get_real_market_news(limit=30):
     """
-    YahooがダメならCoinDesk、それもダメならCointelegraph...と
-    次々にソースを変えて絶対にデータを取ってくる関数
+    CryptoCompare APIを使用して、絶対にブロックされない正規ルートでニュースを取得する。
+    世界中の主要クリプトメディアのニュースが集約されている。
     """
-    sources = [
-        ("https://finance.yahoo.com/rss/headline?s=BTC-USD", "Yahoo Finance"),
-        ("https://www.coindesk.com/arc/outboundfeeds/rss/", "CoinDesk"),
-        ("https://cointelegraph.com/rss", "CoinTelegraph"),
-        ("https://cryptopotato.com/feed/", "CryptoPotato")
-    ]
+    url = "https://min-api.cryptocompare.com/data/v2/news/?lang=EN"
     
-    # ブラウザのふりをするヘッダー
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
-    
-    for url, source_name in sources:
-        try:
-            # requestsで生データを取ってからfeedparserに食わせる（ブロック回避）
-            response = requests.get(url, headers=headers, timeout=5)
-            if response.status_code == 200:
-                feed = feedparser.parse(response.content)
-                
-                if not feed.entries:
-                    continue # エントリーが空なら次のソースへ
-                    
-                news_items = []
-                for i, entry in enumerate(feed.entries[:limit]):
-                    title = entry.title
-                    link = entry.link
-                    # 日付処理
-                    if 'published' in entry:
-                        pub_str = entry.published
-                    elif 'updated' in entry:
-                        pub_str = entry.updated
-                    else:
-                        pub_str = str(datetime.now())
-                        
-                    try:
-                        # ざっくり日付パース
-                        dt_obj = pd.to_datetime(pub_str).to_pydatetime()
-                        # タイムゾーン情報を削除して統一
-                        dt_obj = dt_obj.replace(tzinfo=None)
-                    except:
-                        dt_obj = datetime.now()
-
-                    news_items.append({
-                        "id": i, 
-                        "text": title, 
-                        "date_str": dt_obj.strftime("%Y-%m-%d %H:%M"),
-                        "timestamp": dt_obj,
-                        "source": source_name, 
-                        "link": link
-                    })
-                
-                if news_items:
-                    return news_items, source_name # 成功したら即リターン
-        except:
-            continue
+    try:
+        response = requests.get(url, timeout=10)
+        data = response.json()
+        
+        if "Data" not in data:
+            return []
             
-    return [], "None" # 全滅
+        news_items = []
+        # データ構造を整形
+        for i, item in enumerate(data["Data"][:limit]):
+            title = item.get("title", "")
+            source = item.get("source_info", {}).get("name", "CryptoCompare")
+            url = item.get("url", "#")
+            published_on = item.get("published_on", 0)
+            
+            # タイムスタンプ変換
+            dt_obj = datetime.fromtimestamp(published_on)
+            date_str = dt_obj.strftime("%Y-%m-%d %H:%M")
+            
+            news_items.append({
+                "id": i,
+                "text": title,
+                "date_str": date_str,
+                "timestamp": dt_obj,
+                "source": source,
+                "link": url
+            })
+            
+        return news_items
+    except Exception as e:
+        st.error(f"API Error: {e}")
+        return []
 
 # --- 4. Analytics Modules ---
 
@@ -199,7 +174,6 @@ def analyze_sentiment(news_list):
     try:
         res = model.generate_content(prompt)
         if not res.text: return []
-        
         results = []
         for line in res.text.strip().split("\n"):
             parts = line.split("|")
@@ -220,7 +194,7 @@ def analyze_sentiment(news_list):
 def extract_keywords(df):
     if df.empty: return []
     text = " ".join(df['text'].tolist()).lower()
-    ignore = ['to', 'in', 'for', 'of', 'the', 'on', 'and', 'a', 'is', 'at', 'bitcoin', 'crypto', 'price', 'market', 'btc', 'after', 'as', 'with', 'from', 'by', 'vs', 'new', 'top', 'why', 'will']
+    ignore = ['to', 'in', 'for', 'of', 'the', 'on', 'and', 'a', 'is', 'at', 'bitcoin', 'crypto', 'price', 'market', 'btc', 'after', 'as', 'with', 'from', 'by', 'vs', 'new', 'top', 'why', 'will', 'news', 'analysis', 'live', '-', '|', 'cryptocurrency', 'says']
     words = re.findall(r'\b\w{3,}\b', text)
     filtered = [w for w in words if w not in ignore and not w.isdigit()]
     return Counter(filtered).most_common(8)
@@ -228,23 +202,27 @@ def extract_keywords(df):
 # --- 5. Main Dashboard UI ---
 
 st.title("⚡ TRADER'S COCKPIT: BTC SENTINEL")
-st.markdown("REAL-TIME MARKET INTELLIGENCE // AI-POWERED ANALYSIS")
+st.markdown("REAL-TIME MARKET INTELLIGENCE // CRYPTOCOMPARE API FEED")
 
 if st.button("🔄 REFRESH DATA FEED", type="primary"):
-    with st.spinner("📡 SCANNING MULTIPLE FREQUENCIES..."):
+    with st.spinner("📡 ESTABLISHING SECURE UPLINK..."):
         # Parallel-ish Fetching
         btc_price, btc_change, btc_chart = get_crypto_price()
         fng_val, fng_class = get_fear_greed_index()
-        raw_news, source_used = get_rss_news_robust(limit=30)
+        
+        # ★ここが変更点: 正規APIから取得
+        raw_news = get_real_market_news(limit=25)
         
         # AI Analysis
+        df = pd.DataFrame()
         if raw_news:
             analyzed_data = analyze_sentiment(raw_news)
-            df = pd.DataFrame(analyzed_data)
-        else:
-            df = pd.DataFrame()
+            if analyzed_data:
+                df = pd.DataFrame(analyzed_data)
+            else:
+                df = pd.DataFrame(raw_news) # AI失敗時用
 
-    # --- LAYOUT ---
+    # --- LAYOUT CONSTRUCTION ---
     
     # ROW 1: KPI CARDS
     col1, col2, col3, col4 = st.columns(4)
@@ -266,10 +244,10 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
             <div class="glass-card">
                 <div class="kpi-label">AI SENTIMENT</div>
                 <div class="kpi-value" style="color:{col}">{int(score)}</div>
-                <div class="kpi-sub">Source: {source_used}</div>
+                <div class="kpi-sub">Market Mood</div>
             </div>""", unsafe_allow_html=True)
         else:
-            st.markdown("""<div class="glass-card"><div class="kpi-label">AI SENTIMENT</div><div class="kpi-value" style="color:#555">--</div><div class="kpi-sub">NO DATA</div></div>""", unsafe_allow_html=True)
+            st.markdown(f"""<div class="glass-card"><div class="kpi-label">AI SENTIMENT</div><div class="kpi-value">--</div><div class="kpi-sub">NO SIGNAL</div></div>""", unsafe_allow_html=True)
 
     with col3:
         fng_col = "#00ff99" if fng_val > 50 else "#ff0055"
@@ -286,7 +264,7 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
         <div class="glass-card">
             <div class="kpi-label">SIGNAL DENSITY</div>
             <div class="kpi-value">{count}</div>
-            <div class="kpi-sub">News Processed</div>
+            <div class="kpi-sub">Packets Processed</div>
         </div>""", unsafe_allow_html=True)
 
     # ROW 2: CHARTS
@@ -296,15 +274,12 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
         st.subheader("📈 Price Action + Trend")
         if not btc_chart.empty:
             fig = go.Figure()
-            # Price Line
             fig.add_trace(go.Scatter(x=btc_chart['timestamp'], y=btc_chart['price'], mode='lines', name='Price', line=dict(color='#00e5ff', width=2)))
-            # SMA Line (Trend)
-            fig.add_trace(go.Scatter(x=btc_chart['timestamp'], y=btc_chart['SMA'], mode='lines', name='MA(24h)', line=dict(color='#bd00ff', width=1, dash='dash')))
-            
+            if 'SMA' in btc_chart.columns:
+                fig.add_trace(go.Scatter(x=btc_chart['timestamp'], y=btc_chart['SMA'], mode='lines', name='MA(24h)', line=dict(color='#bd00ff', width=1, dash='dash')))
             fig.update_layout(
                 paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                font=dict(color='#888'),
-                margin=dict(l=0, r=0, t=0, b=0), height=350,
+                font=dict(color='#888'), margin=dict(l=0, r=0, t=0, b=0), height=350,
                 xaxis=dict(showgrid=False), yaxis=dict(gridcolor='rgba(255,255,255,0.1)'),
                 legend=dict(orientation="h", y=1, x=0)
             )
@@ -315,18 +290,21 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
     with c_chart2:
         st.subheader("🌊 Sentiment Flow")
         if not df.empty and 'Score' in df.columns:
-            df = df.sort_values('timestamp')
-            fig = px.area(df, x='timestamp', y='Score', line_shape='spline')
+            if 'timestamp' in df.columns:
+                df = df.sort_values('timestamp')
+                fig = px.area(df, x='timestamp', y='Score', line_shape='spline')
+            else:
+                fig = px.bar(df, x=df.index, y='Score')
+
             fig.update_traces(line_color='#00ff99', fillcolor='rgba(0, 255, 153, 0.1)')
             fig.update_layout(
                 paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                font=dict(color='#888'),
-                margin=dict(l=0, r=0, t=0, b=0), height=350,
+                font=dict(color='#888'), margin=dict(l=0, r=0, t=0, b=0), height=350,
                 yaxis=dict(range=[-100, 100], gridcolor='rgba(255,255,255,0.1)'), xaxis=dict(showticklabels=False)
             )
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.markdown("<div style='height:350px; display:flex; align-items:center; justify-content:center; border:1px dashed #333; border-radius:10px; color:#555;'>WAITING FOR SIGNALS</div>", unsafe_allow_html=True)
+            st.info("No sentiment data to plot.")
 
     # ROW 3: ANALYSIS
     c_kw, c_pie = st.columns(2)
@@ -338,15 +316,12 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
             if keywords:
                 kw_df = pd.DataFrame(keywords, columns=['word', 'count'])
                 fig = px.bar(kw_df, x='count', y='word', orientation='h', color='count', color_continuous_scale='Viridis')
-                fig.update_layout(
-                    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color='#e0e0e0',
-                    yaxis={'categoryorder':'total ascending'}, height=300, margin=dict(t=0,b=0)
-                )
+                fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color='#e0e0e0', yaxis={'categoryorder':'total ascending'}, height=300, margin=dict(t=0,b=0))
                 st.plotly_chart(fig, use_container_width=True)
             else:
-                st.info("Not enough text data for narrative analysis.")
+                st.info("Insufficient text for analysis.")
         else:
-            st.info("No narrative data.")
+             st.info("No narrative data.")
 
     with c_pie:
         st.subheader("🥧 Emotion Ratio")
@@ -362,20 +337,21 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
     st.subheader("📋 Intelligence Logs")
     if not df.empty:
         for idx, row in df.iterrows():
-            s_col = "#00ff99" if row['Score'] > 0 else "#ff0055" if row['Score'] < 0 else "#888"
+            s_col = "#00ff99" if row.get('Score', 0) > 0 else "#ff0055" if row.get('Score', 0) < 0 else "#888"
+            date_display = row.get('date_str', 'Recent')
             st.markdown(f"""
             <div style="border-left: 3px solid {s_col}; padding-left: 15px; margin-bottom: 10px; background: rgba(255,255,255,0.02);">
-                <div style="font-size: 0.8rem; color: #666;">{row['date_str']} | {row['source']}</div>
+                <div style="font-size: 0.8rem; color: #666;">{date_display} | {row['source']}</div>
                 <div style="display:flex; justify-content:space-between; align-items:center;">
                     <a href="{row['link']}" target="_blank" style="color: #eee; font-weight:bold; text-decoration:none; font-size:1rem;">{row['text']}</a>
                     <div style="text-align:right;">
-                        <span style="color:{s_col}; font-weight:bold;">{row['Label']}</span> <span style="font-size:0.8rem; color:#666;">({row['Score']})</span>
+                        <span style="color:{s_col}; font-weight:bold;">{row.get('Label', '-')}</span> <span style="font-size:0.8rem; color:#666;">({row.get('Score', 0)})</span>
                     </div>
                 </div>
             </div>
             """, unsafe_allow_html=True)
     else:
-        st.warning("No news feed available at this moment. Please try again later.")
+        st.error("ALL SYSTEMS DOWN. Check connection.")
 
 else:
     st.markdown("""
