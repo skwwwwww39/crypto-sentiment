@@ -30,8 +30,9 @@ if not api_key:
     st.stop()
 
 genai.configure(api_key=api_key)
-# モデルを最も標準的で安定しているものに変更
-model_name = 'gemini-1.5-flash'
+
+# ★修正完了：画像にあった正しいモデル名 'gemini-flash-latest' に設定しました
+model_name = 'gemini-flash-latest'
 model = genai.GenerativeModel(model_name)
 
 # --- 3. データ取得 (RSS) ---
@@ -59,10 +60,9 @@ def get_rss_news():
         st.error(f"RSS Error: {e}")
         return []
 
-# --- 4. バッチ分析 (エラー表示強化版) ---
+# --- 4. バッチ分析 ---
 def analyze_batch(news_list):
     results = []
-    # テキストブロック作成
     news_text_block = "\n".join([f"ID {item['id']}: {item['text']}" for item in news_list])
     
     progress = st.progress(0)
@@ -84,7 +84,6 @@ def analyze_batch(news_list):
     
     try:
         response = model.generate_content(prompt)
-        # レスポンスが空でないか確認
         if not response.text:
             st.error("⚠️ AIからの応答が空でした。")
             return []
@@ -105,9 +104,7 @@ def analyze_batch(news_list):
                 except:
                     continue
     except Exception as e:
-        # ★ここが重要：エラーの正体を画面に出す
         st.error(f"💥 AI分析エラー詳細: {e}")
-        st.write("ヒント: APIキーが正しいか、または無料枠の上限(RPM)を超えていないか確認してください。")
     
     progress.progress(100)
     time.sleep(0.5)
@@ -116,7 +113,8 @@ def analyze_batch(news_list):
     return results
 
 # --- 5. メインUI ---
-st.title("⚡ Crypto Sentiment Core (Debug Mode)")
+st.title("⚡ Crypto Sentiment Core")
+
 if st.button("FETCH & ANALYZE 🔄", type="primary"):
     raw_news = get_rss_news()
     if not raw_news:
@@ -124,7 +122,7 @@ if st.button("FETCH & ANALYZE 🔄", type="primary"):
     else:
         analyzed_data = analyze_batch(raw_news)
         if len(analyzed_data) == 0:
-            st.warning("データは取得できましたが、AI分析結果が0件でした。上のエラー詳細を確認してください。")
+            st.warning("データは取得できましたが、AI分析結果が0件でした。")
         else:
             df = pd.DataFrame(analyzed_data)
             st.divider()
@@ -149,4 +147,7 @@ if st.button("FETCH & ANALYZE 🔄", type="primary"):
                 fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color='#fff', yaxis={'visible':False})
                 st.plotly_chart(fig, use_container_width=True)
             with col2:
-                st.dataframe(df[['date','text','Label','Score']], use_container_width=True)
+                # リンク付きで表示
+                for index, row in df.iterrows():
+                    st.markdown(f"**{row['date']}**<br>[{row['text']}]({row['link']})<br>*{row['Label']} ({row['Score']})*", unsafe_allow_html=True)
+                    st.markdown("---")
