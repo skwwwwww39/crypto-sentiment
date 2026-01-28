@@ -138,7 +138,7 @@ def get_real_market_news(limit=25):
         st.error(f"API Error: {e}")
         return []
 
-# --- 4. Analytics Modules (Improved) ---
+# --- 4. Analytics Modules ---
 
 def analyze_sentiment(news_list):
     if not news_list: return []
@@ -167,20 +167,26 @@ def analyze_sentiment(news_list):
             
             # 正規表現で強力にパースする
             for line in res.text.strip().split("\n"):
-                # "数字 | 文字 | 数字" のパターンを探す
                 match = re.search(r'(\d+)\s*\|\s*([A-Za-z]+)\s*\|\s*(-?\d+)', line)
                 if match:
                     nid = int(match.group(1))
                     label = match.group(2)
                     score = int(match.group(3))
                     
+                    # 該当するニュースアイテムを探して結果に追加
+                    # 注意: ここで直接代入せず、新しい辞書として追加して重複を防ぐ
+                    found_item = None
                     for item in news_list:
                         if item['id'] == nid:
-                            item['Label'] = label
-                            item['Score'] = score
-                            results.append(item)
+                            found_item = item.copy() # コピーを作成
+                            found_item['Label'] = label
+                            found_item['Score'] = score
+                            break
+                    
+                    if found_item:
+                        results.append(found_item)
+
         except Exception as e:
-            # エラー起きても止まらず次のバッチへ
             print(f"Batch Error: {e}")
             continue
             
@@ -284,13 +290,17 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
 
     with c_chart2:
         st.subheader("🌊 Sentiment Flow")
-        if not df.empty and 'Score' in df.columns:
-            if 'timestamp' in df.columns:
-                # ★ここが修正点：データをタイムスタンプ順にソートする
-                df = df.sort_values('timestamp')
-                fig = px.area(df, x='timestamp', y='Score', line_shape='spline')
-            else:
-                fig = px.bar(df, x=df.index, y='Score')
+        if not df.empty and 'Score' in df.columns and 'timestamp' in df.columns:
+            # ★★★ グラフ修正の核心部分 ★★★
+            # グラフ専用のデータフレームを作成（元のdfに影響を与えない）
+            chart_df = df.copy()
+            # タイムスタンプ型に確実に変換
+            chart_df['timestamp'] = pd.to_datetime(chart_df['timestamp'])
+            # タイムスタンプの昇順（古い順）に並べ替える
+            chart_df = chart_df.sort_values(by='timestamp', ascending=True)
+            
+            # ソート済みのデータでグラフを描く
+            fig = px.area(chart_df, x='timestamp', y='Score', line_shape='spline')
 
             fig.update_traces(line_color='#00ff99', fillcolor='rgba(0, 255, 153, 0.1)')
             fig.update_layout(
@@ -300,7 +310,7 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
             )
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("Waiting for AI analysis results...")
+            st.info("No sentiment data available.")
 
     # ROW 3: ANALYSIS
     c_kw, c_pie = st.columns(2)
@@ -327,12 +337,18 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
             fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', font_color='#e0e0e0', height=300, margin=dict(t=0,b=0), showlegend=True)
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("Waiting for AI analysis results...")
+            st.info("No emotion data.")
 
     # ROW 4: FEED
     st.subheader("📋 Intelligence Logs")
     if not df.empty:
-        for idx, row in df.iterrows():
+        # ログは「新しい順」が見やすいので、グラフとは逆に降順で表示する
+        if 'timestamp' in df.columns:
+             df_log = df.sort_values(by='timestamp', ascending=False)
+        else:
+             df_log = df
+             
+        for idx, row in df_log.iterrows():
             s_col = "#00ff99" if row.get('Score', 0) > 0 else "#ff0055" if row.get('Score', 0) < 0 else "#888"
             date_display = row.get('date_str', 'Recent')
             st.markdown(f"""
