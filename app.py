@@ -16,6 +16,7 @@ st.markdown("""
     .metric-card { background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(189, 0, 255, 0.2); backdrop-filter: blur(10px); border-radius: 12px; padding: 20px; text-align: center; }
     .metric-value { font-size: 2.2rem; font-weight: 700; color: #fff; }
     .metric-label { color: #b39ddb; font-size: 0.9rem; text-transform: uppercase; }
+    .error-box { background: rgba(255, 0, 0, 0.1); border: 1px solid red; padding: 10px; border-radius: 5px; margin-bottom: 20px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -26,25 +27,24 @@ except:
     api_key = os.getenv("GEMINI_API_KEY")
 
 if not api_key:
-    st.error("🚨 APIキーが見つかりません。Streamlit CloudのSecretsに 'GEMINI_API_KEY' を設定してください。")
+    st.error("🚨 APIキーが見つかりません。")
     st.stop()
 
 genai.configure(api_key=api_key)
 
-# ★修正完了：画像にあった正しいモデル名 'gemini-flash-latest' に設定しました
-model_name = 'gemini-flash-latest'
+# ★★★ ここが変更点！「Lite（軽量版）」を指定します ★★★
+# 画像にあった 'gemini-flash-lite-latest' なら、無料枠が大幅に増えます
+model_name = 'gemini-flash-lite-latest' 
 model = genai.GenerativeModel(model_name)
 
 # --- 3. データ取得 (RSS) ---
-def get_rss_news():
+def get_rss_news(limit=15): 
     rss_url = "https://finance.yahoo.com/rss/headline?s=BTC-USD"
-    status = st.empty()
-    status.info("📡 Connecting to RSS Feed...")
     try:
         feed = feedparser.parse(rss_url)
         if not feed.entries: return []
         news_items = []
-        for i, entry in enumerate(feed.entries):
+        for i, entry in enumerate(feed.entries[:limit]):
             title = entry.title
             link = entry.link
             published = entry.published if 'published' in entry else "Recent"
@@ -54,29 +54,23 @@ def get_rss_news():
             except:
                 date_str = published
             news_items.append({"id": i, "text": title, "date": date_str, "source": "Yahoo RSS", "link": link})
-        status.empty()
         return news_items
     except Exception as e:
         st.error(f"RSS Error: {e}")
         return []
 
-# --- 4. バッチ分析 ---
-def analyze_batch(news_list):
+# --- 4. 一括分析 ---
+def analyze_all_at_once(news_list):
+    if not news_list: return []
+    
     results = []
     news_text_block = "\n".join([f"ID {item['id']}: {item['text']}" for item in news_list])
     
-    progress = st.progress(0)
-    status = st.empty()
-    status.markdown(f"🧠 AI Analyzing with **{model_name}**...")
-    
     prompt = f"""
-    Analyze the sentiment of these crypto news headlines.
-    Output a list of ID, Label, and Score.
-    
-    Constraints:
-    - Label must be one of: [Despair, Fear, Negative, Positive, Optimism, Euphoria]
-    - Score must be between -100 (Despair) and 100 (Euphoria)
-    - Format per line: ID | Label | Score
+    Analyze sentiment of these {len(news_list)} crypto headlines.
+    Return ONLY a list: ID | Label | Score
+    Label options: [Despair, Fear, Negative, Positive, Optimism, Euphoria]
+    Score: -100 to 100
     
     Headlines:
     {news_text_block}
@@ -84,9 +78,8 @@ def analyze_batch(news_list):
     
     try:
         response = model.generate_content(prompt)
-        if not response.text:
-            st.error("⚠️ AIからの応答が空でした。")
-            return []
+        
+        if not response.text: return []
             
         lines = response.text.strip().split("\n")
         for line in lines:
@@ -103,31 +96,51 @@ def analyze_batch(news_list):
                             results.append(item)
                 except:
                     continue
+        return results
+        
     except Exception as e:
-        st.error(f"💥 AI分析エラー詳細: {e}")
-    
-    progress.progress(100)
-    time.sleep(0.5)
-    status.empty()
-    progress.empty()
-    return results
+        error_str = str(e)
+        if "429" in error_str or "Quota exceeded" in error_str:
+            st.markdown(f"""
+            <div class='error-box'>
+                <h3>⚠️ API制限 (429 Error)</h3>
+                <p>モデル ({model_name}) の利用上限に達しました。</p>
+                <p>このLiteモデルでも制限が出る場合、時間を空けてください。</p>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.error(f"AI分析エラー: {e}")
+        return []
 
 # --- 5. メインUI ---
-st.title("⚡ Crypto Sentiment Core")
+st.title(f"⚡ Crypto Sentiment Core")
+st.caption(f"Powered by {model_name} (High Quota Mode)")
 
 if st.button("FETCH & ANALYZE 🔄", type="primary"):
-    raw_news = get_rss_news()
+    
+    status_box = st.empty()
+    status_box.info("📡 Fetching RSS Feed...")
+    
+    raw_news = get_rss_news(limit=15)
+    
     if not raw_news:
         st.error("❌ Failed to fetch RSS data.")
     else:
-        analyzed_data = analyze_batch(raw_news)
+        status_box.info(f"🧠 Analyzing {len(raw_news)} headlines with {model_name}...")
+        
+        analyzed_data = analyze_all_at_once(raw_news)
+        
+        status_box.empty()
+        
         if len(analyzed_data) == 0:
-            st.warning("データは取得できましたが、AI分析結果が0件でした。")
+            st.warning("分析結果がありません。")
+            df = pd.DataFrame(raw_news) 
         else:
             df = pd.DataFrame(analyzed_data)
-            st.divider()
-            
-            # 結果表示
+
+        st.divider()
+        
+        if 'Score' in df.columns:
             avg = df['Score'].mean()
             if avg>=60: m,c="EUPHORIA","#00FF99"
             elif avg>=20: m,c="OPTIMISM","#00e5ff"
@@ -147,7 +160,7 @@ if st.button("FETCH & ANALYZE 🔄", type="primary"):
                 fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color='#fff', yaxis={'visible':False})
                 st.plotly_chart(fig, use_container_width=True)
             with col2:
-                # リンク付きで表示
                 for index, row in df.iterrows():
-                    st.markdown(f"**{row['date']}**<br>[{row['text']}]({row['link']})<br>*{row['Label']} ({row['Score']})*", unsafe_allow_html=True)
+                    l_str = f"*{row['Label']} ({row['Score']})*" if 'Score' in row else ""
+                    st.markdown(f"**{row['date']}**<br>[{row['text']}]({row['link']})<br>{l_str}", unsafe_allow_html=True)
                     st.markdown("---")
