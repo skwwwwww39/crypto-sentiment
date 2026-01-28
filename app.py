@@ -4,7 +4,7 @@ import plotly.express as px
 import pdfplumber
 import re
 
-# --- 1. Cyberpunk Design System ---
+# --- 1. Design System ---
 st.set_page_config(page_title="Titan Analytics: SuperFunded", layout="wide", page_icon="🛡️")
 
 st.markdown("""
@@ -38,93 +38,115 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. Robust Parsing Engine ---
+# --- 2. Advanced OCR Cleaning Engine ---
 
-def clean_cell_text(text):
-    """セル内の改行や汚れを除去して、最初の有効な行だけ取る"""
-    if not text: return ""
-    # 改行で分割して、空じゃない最初の行を取る
-    lines = str(text).split('\n')
-    for line in lines:
-        cleaned = line.strip()
-        if cleaned:
-            return cleaned
-    return ""
+def clean_superfunded_number(val_str):
+    """
+    SuperFundedのPDF特有のOCRエラー（誤字）を修正して数値化する
+    例: "5-1,143,66" -> -1143.66
+    例: "840:81" -> 840.81
+    """
+    if not isinstance(val_str, str):
+        return 0.0
+    
+    # 1. 改行が含まれている場合、最後の行（Net Profitの位置）を取得
+    if '\n' in val_str:
+        val_str = val_str.split('\n')[-1]
 
-def clean_currency(value):
-    """通貨形式 ($1,234.56) を float に変換"""
-    if isinstance(value, (int, float)): return float(value)
-    s = str(value)
-    # OCRノイズ除去 (5-284 -> -284, $除去, ,除去)
+    s = val_str.strip()
+    
+    # 2. 通貨記号とカンマを除去
     s = s.replace('$', '').replace(',', '').replace(' ', '')
-    s = re.sub(r'^[45]-', '-', s) # "5-100" みたいなOCRミスを "-100" に
+    
+    # 3. OCRエラー修正: 先頭の "5-" や "4-" はマイナス記号の誤検知
+    s = re.sub(r'^[45]-', '-', s)
+    
+    # 4. OCRエラー修正: 数字の間の ":" は小数点の誤検知
+    s = s.replace(':', '.')
+    
+    # 5. その他、末尾の変な文字を除去
+    s = re.sub(r'[^\d\.\-]', '', s)
+
     try:
         return float(s)
     except:
         return 0.0
 
-def parse_pdf(file):
-    """SuperFunded PDFパーサー (汚れたデータ対応版)"""
+def parse_pdf_robust(file):
+    """ロバスト（頑丈）なPDFパーサー"""
     data = []
     
     try:
         with pdfplumber.open(file) as pdf:
             for page in pdf.pages:
                 tables = page.extract_tables()
+                
                 for table in tables:
                     for row in table:
-                        # 行全体をクリーニング（改行などを除去）
-                        clean_row = [clean_cell_text(cell) for cell in row]
+                        # 空セルを除去してリスト化
+                        cleaned_row = [str(cell).strip() for cell in row if cell]
                         
-                        # データ行判定ロジック（緩和版）
-                        # 条件: 列数が十分あり、2列目か3列目に "Buy" か "Sell" が含まれているか
-                        # または、1列目がIDっぽい（長い数字）か
-                        if len(clean_row) >= 8:
-                            # IDチェック (数字のみ抽出して10桁以上あるか)
-                            id_digits = "".join(filter(str.isdigit, clean_row[0]))
-                            is_id = len(id_digits) > 10
-                            
-                            # タイプチェック
-                            type_col = clean_row[2].lower()
-                            is_trade = 'buy' in type_col or 'sell' in type_col
-                            
-                            if is_id or is_trade:
-                                try:
-                                    item = {
-                                        "Open Time": clean_row[1],
-                                        "Type": clean_row[2],
-                                        "Symbol": clean_row[3],
-                                        "Net Profit": clean_currency(clean_row[-1])
-                                    }
-                                    data.append(item)
-                                except:
-                                    continue
+                        # データ行の判定: 
+                        # "Buy" か "Sell" という単語が、リストの前半(インデックス1~3あたり)に含まれているか
+                        trade_type = None
+                        type_idx = -1
+                        
+                        for i, cell in enumerate(cleaned_row[:5]): # 最初の5列以内を探す
+                            if cell.lower() in ['buy', 'sell']:
+                                trade_type = cell
+                                type_idx = i
+                                break
+                        
+                        if trade_type and len(cleaned_row) >= 5:
+                            try:
+                                # 構造の推定:
+                                # Typeが見つかった列の:
+                                # 1つ前 = 日付 (Open Time)
+                                # 1つ後 = 通貨ペア (Symbol)
+                                # 一番最後 = 損益 (Net Profit)
+                                
+                                date_val = cleaned_row[type_idx - 1]
+                                symbol_val = cleaned_row[type_idx + 1]
+                                profit_val = cleaned_row[-1] # 常に最後の列がNet Profit
+                                
+                                # 日付のクリーニング (改行がある場合は最初の行)
+                                if '\n' in date_val:
+                                    date_val = date_val.split('\n')[0]
+
+                                item = {
+                                    "Open Time": date_val,
+                                    "Type": trade_type,
+                                    "Symbol": symbol_val,
+                                    "Net Profit": clean_superfunded_number(profit_val)
+                                }
+                                data.append(item)
+                            except:
+                                continue
 
         if not data:
             return pd.DataFrame()
 
         df = pd.DataFrame(data)
         
-        # 日付変換 (失敗したらNaTになるがエラーで止まらないようにする)
+        # 日付変換: "18/02/25 17:34:28" -> datetime
         df['Open Time'] = pd.to_datetime(df['Open Time'], dayfirst=True, errors='coerce')
         
-        # 日付が取れなかった行（ゴミ行）を削除
+        # 日付変換に失敗した行（ヘッダーの残りなど）を削除
         df = df.dropna(subset=['Open Time'])
         
         return df
 
     except Exception as e:
-        st.error(f"解析エラー: {e}")
+        st.error(f"System Error: {e}")
         return pd.DataFrame()
 
 def load_demo_data():
-    """デモデータ生成"""
     dates = pd.date_range(end=pd.Timestamp.now(), periods=30, freq='D')
     df = pd.DataFrame({
         "Open Time": dates,
         "Symbol": ["USDJPY", "EURUSD", "GBPUSD", "XAUUSD", "BTCUSD"] * 6,
         "Type": ["Buy", "Sell"] * 15,
-        "Net Profit": [100, -50, 200, -120, 300, -80, 50, -200, 400, -100] * 3
+        "Net Profit": [150, -80, 240, -120, 500, -80, 50, -200, 400, -50] * 3
     })
     return df
 
@@ -139,16 +161,16 @@ def analyze_data(df):
     losses = df[df['Net Profit'] <= 0]
     
     win_rate = (len(wins) / total_trades * 100) if total_trades > 0 else 0
-    profit_factor = (wins['Net Profit'].sum() / abs(losses['Net Profit'].sum())) if not losses.empty else float('inf')
     
-    # 累積損益カーブ用
+    gross_profit = wins['Net Profit'].sum()
+    gross_loss = abs(losses['Net Profit'].sum())
+    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else 0
+    
     df_sorted = df.sort_values('Open Time')
     df_sorted['Cumulative PnL'] = df_sorted['Net Profit'].cumsum()
     
-    # 曜日別集計
     df['Day'] = df['Open Time'].dt.day_name()
     day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-    # 存在しない曜日も0埋めするためにreindex
     day_pnl = df.groupby('Day')['Net Profit'].sum().reindex(day_order).fillna(0).reset_index()
 
     return {
@@ -163,21 +185,20 @@ def analyze_data(df):
 # --- 4. Dashboard UI ---
 
 st.title("🛡️ TITAN ANALYTICS")
-st.markdown("SUPERFUNDED JOURNAL // PDF PARSER")
+st.markdown("SUPERFUNDED JOURNAL // INTELLIGENT PARSER")
 
 with st.sidebar:
     st.header("📂 DATA INPUT")
     uploaded_file = st.file_uploader("Upload PDF Report", type="pdf")
     use_demo = st.checkbox("Demo Mode", value=False)
-    st.info("SuperFundedの取引履歴PDFをアップロードしてください。")
 
 df = pd.DataFrame()
 
 if uploaded_file:
-    with st.spinner("Analyzing PDF..."):
-        df = parse_pdf(uploaded_file)
+    with st.spinner("Decoding PDF & Fixing OCR Errors..."):
+        df = parse_pdf_robust(uploaded_file)
         if df.empty:
-            st.error("PDFからデータを読み取れませんでした。ファイル形式を確認するか、デモモードをお試しください。")
+            st.error("Error: Could not extract trades. Please check the PDF format.")
 elif use_demo:
     df = load_demo_data()
 
@@ -214,9 +235,8 @@ if not df.empty:
         fig_sym.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color='#888', height=300, margin=dict(t=0,b=0,l=0,r=0))
         st.plotly_chart(fig_sym, use_container_width=True)
 
-    with st.expander("Show Raw Data"):
+    with st.expander("Show Parsed Raw Data"):
         st.dataframe(m['df'][['Open Time', 'Symbol', 'Type', 'Net Profit']].sort_values('Open Time', ascending=False), use_container_width=True)
 
 else:
-    # 待機画面
     st.markdown("<div style='text-align:center; padding:50px; opacity:0.6'><h1>READY TO ANALYZE</h1><p>Upload your PDF from the sidebar.</p></div>", unsafe_allow_html=True)
