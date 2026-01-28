@@ -144,7 +144,7 @@ def analyze_sentiment(news_list):
     if not news_list: return []
     
     results = []
-    # ★改善点：バッチ処理（10件ずつ処理してエラーを防ぐ）
+    # バッチ処理（10件ずつ処理してエラーを防ぐ）
     batch_size = 10
     
     for i in range(0, len(news_list), batch_size):
@@ -165,7 +165,7 @@ def analyze_sentiment(news_list):
             res = model.generate_content(prompt)
             if not res.text: continue
             
-            # ★改善点：正規表現で強力にパースする
+            # 正規表現で強力にパースする
             for line in res.text.strip().split("\n"):
                 # "数字 | 文字 | 数字" のパターンを探す
                 match = re.search(r'(\d+)\s*\|\s*([A-Za-z]+)\s*\|\s*(-?\d+)', line)
@@ -286,6 +286,7 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
         st.subheader("🌊 Sentiment Flow")
         if not df.empty and 'Score' in df.columns:
             if 'timestamp' in df.columns:
+                # ★ここが修正点：データをタイムスタンプ順にソートする
                 df = df.sort_values('timestamp')
                 fig = px.area(df, x='timestamp', y='Score', line_shape='spline')
             else:
