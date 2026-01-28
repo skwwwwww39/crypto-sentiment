@@ -287,24 +287,36 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
     with c_chart2:
         st.subheader("🌊 Sentiment Flow")
         if not df.empty and 'Score' in df.columns and 'timestamp' in df.columns:
-            # ★★★ グラフ修正ポイント（リニア線形補間＆重複削除） ★★★
+            # ★★★ 修正箇所：強制型変換と厳密なソート ★★★
             chart_df = df.copy()
-            chart_df['timestamp'] = pd.to_datetime(chart_df['timestamp'])
             
-            # 同じ時間のデータは平均値をとって1つにまとめる（これで上下のブレも防ぐ）
-            chart_df = chart_df.groupby('timestamp', as_index=False)['Score'].mean()
+            # 1. タイムスタンプを強制的にdatetime型へ変換 (エラーは消す)
+            chart_df['timestamp'] = pd.to_datetime(chart_df['timestamp'], errors='coerce')
+            chart_df = chart_df.dropna(subset=['timestamp']) # 念のためNaNは消す
             
-            # 昇順ソート（必須）
+            # 2. 時間でソートする (これが一番重要)
             chart_df = chart_df.sort_values(by='timestamp', ascending=True)
             
-            # 直線（linear）で描画してループを防ぐ
-            fig = px.area(chart_df, x='timestamp', y='Score', line_shape='linear')
+            # 3. Graph Objects (go.Scatter) を使って「点と点をつなぐ」
+            # px.areaなどの自動補正を使わず、生のデータをそのまま描画する
+            fig = go.Figure()
+            
+            fig.add_trace(go.Scatter(
+                x=chart_df['timestamp'], 
+                y=chart_df['Score'],
+                mode='lines+markers', # 点と線
+                line=dict(color='#00ff99', width=2, shape='linear'), # shape='linear'で直線にする（ループ回避）
+                fill='tozeroy',
+                fillcolor='rgba(0, 255, 153, 0.1)',
+                name='Sentiment'
+            ))
 
-            fig.update_traces(line_color='#00ff99', fillcolor='rgba(0, 255, 153, 0.1)')
             fig.update_layout(
                 paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
                 font=dict(color='#888'), margin=dict(l=0, r=0, t=0, b=0), height=350,
-                yaxis=dict(range=[-100, 100], gridcolor='rgba(255,255,255,0.1)'), xaxis=dict(showticklabels=False)
+                yaxis=dict(range=[-100, 100], gridcolor='rgba(255,255,255,0.1)'), 
+                xaxis=dict(showticklabels=True, gridcolor='rgba(255,255,255,0.1)'), # 軸ラベルを表示して確認
+                showlegend=False
             )
             st.plotly_chart(fig, use_container_width=True)
         else:
@@ -340,7 +352,7 @@ if st.button("🔄 REFRESH DATA FEED", type="primary"):
     # ROW 4: FEED
     st.subheader("📋 Intelligence Logs")
     if not df.empty:
-        # ログは最新順で見せる
+        # ログは最新順（降順）
         if 'timestamp' in df.columns:
              df_log = df.sort_values(by='timestamp', ascending=False)
         else:
