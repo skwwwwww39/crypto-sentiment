@@ -1,24 +1,19 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import pdfplumber
 import re
-import io
 
 # --- 1. Cyberpunk Design System ---
-st.set_page_config(page_title="Titan Analytics: SuperFunded", layout="wide", page_icon="📊")
+st.set_page_config(page_title="Titan Analytics: SuperFunded", layout="wide", page_icon="🛡️")
 
 st.markdown("""
 <style>
-    /* 全体設定 */
     .stApp {
         background-color: #050505;
         background-image: radial-gradient(circle at 50% 0%, #1a0b2e 0%, #000000 60%);
         color: #e0e0e0;
     }
-    
-    /* カードデザイン */
     .glass-card {
         background: rgba(255, 255, 255, 0.03);
         backdrop-filter: blur(10px);
@@ -28,13 +23,13 @@ st.markdown("""
         margin-bottom: 15px;
         box-shadow: 0 4px 20px rgba(0,0,0,0.4);
         text-align: center;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
     }
-    
-    /* KPIテキスト */
     .kpi-label { font-size: 0.8rem; color: #888; text-transform: uppercase; letter-spacing: 1px; }
     .kpi-value { font-size: 2.0rem; font-weight: 800; color: #fff; }
-    
-    /* アップローダー */
     .stFileUploader > div > div {
         background-color: rgba(255, 255, 255, 0.05);
         border: 1px dashed #bd00ff;
@@ -43,88 +38,94 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 2. Data Parsing Engine ---
+# --- 2. Robust Parsing Engine ---
+
+def clean_cell_text(text):
+    """セル内の改行や汚れを除去して、最初の有効な行だけ取る"""
+    if not text: return ""
+    # 改行で分割して、空じゃない最初の行を取る
+    lines = str(text).split('\n')
+    for line in lines:
+        cleaned = line.strip()
+        if cleaned:
+            return cleaned
+    return ""
 
 def clean_currency(value):
-    """通貨記号やOCRノイズを除去してfloatにする"""
+    """通貨形式 ($1,234.56) を float に変換"""
     if isinstance(value, (int, float)): return float(value)
-    if not isinstance(value, str): return 0.0
-    
-    # ノイズ除去 (5-284 -> -284, $除去, ,除去)
-    val = value.replace('$', '').replace(',', '').replace(' ', '')
-    val = re.sub(r'[45]-', '-', val) # OCRエラー対策: 5- や 4- をマイナスに置換
-    
+    s = str(value)
+    # OCRノイズ除去 (5-284 -> -284, $除去, ,除去)
+    s = s.replace('$', '').replace(',', '').replace(' ', '')
+    s = re.sub(r'^[45]-', '-', s) # "5-100" みたいなOCRミスを "-100" に
     try:
-        return float(val)
+        return float(s)
     except:
         return 0.0
 
 def parse_pdf(file):
-    """SuperFundedのPDFからテーブルを抽出する"""
-    all_rows = []
+    """SuperFunded PDFパーサー (汚れたデータ対応版)"""
+    data = []
     
     try:
         with pdfplumber.open(file) as pdf:
             for page in pdf.pages:
-                # テーブル抽出
                 tables = page.extract_tables()
                 for table in tables:
                     for row in table:
-                        # ヘッダー行や空行をスキップする簡易ロジック
-                        clean_row = [str(cell).strip() if cell else "" for cell in row]
-                        # IDっぽい長さの列があるか確認
-                        if len(clean_row) > 0 and len(clean_row[0]) > 10 and clean_row[0].isdigit():
-                            all_rows.append(clean_row)
-        
-        # DataFrame化 (カラム位置はPDFの構造に合わせる)
-        # 想定: [ID, OpenTime, Type, Symbol, CloseTime, Vol/Open, Close, Comm, Swap/Profit, NetProfit]
-        # ※PDFの列結合状態によってズレる場合があるため、補正ロジックを入れる
-        
-        data = []
-        for r in all_rows:
-            # 必要なデータだけ抜き出して辞書にする
-            # 注: PDFplumberの抽出結果に合わせて調整が必要
-            # ここでは「Net Profit」が最後の列にあると仮定
-            try:
-                item = {
-                    "Open Time": r[1],
-                    "Type": r[2],
-                    "Symbol": r[3],
-                    "Net Profit": clean_currency(r[-1])
-                }
-                data.append(item)
-            except:
-                continue
-                
+                        # 行全体をクリーニング（改行などを除去）
+                        clean_row = [clean_cell_text(cell) for cell in row]
+                        
+                        # データ行判定ロジック（緩和版）
+                        # 条件: 列数が十分あり、2列目か3列目に "Buy" か "Sell" が含まれているか
+                        # または、1列目がIDっぽい（長い数字）か
+                        if len(clean_row) >= 8:
+                            # IDチェック (数字のみ抽出して10桁以上あるか)
+                            id_digits = "".join(filter(str.isdigit, clean_row[0]))
+                            is_id = len(id_digits) > 10
+                            
+                            # タイプチェック
+                            type_col = clean_row[2].lower()
+                            is_trade = 'buy' in type_col or 'sell' in type_col
+                            
+                            if is_id or is_trade:
+                                try:
+                                    item = {
+                                        "Open Time": clean_row[1],
+                                        "Type": clean_row[2],
+                                        "Symbol": clean_row[3],
+                                        "Net Profit": clean_currency(clean_row[-1])
+                                    }
+                                    data.append(item)
+                                except:
+                                    continue
+
+        if not data:
+            return pd.DataFrame()
+
         df = pd.DataFrame(data)
         
-        # 日付変換
-        df['Open Time'] = pd.to_datetime(df['Open Time'], errors='coerce', dayfirst=True)
+        # 日付変換 (失敗したらNaTになるがエラーで止まらないようにする)
+        df['Open Time'] = pd.to_datetime(df['Open Time'], dayfirst=True, errors='coerce')
+        
+        # 日付が取れなかった行（ゴミ行）を削除
+        df = df.dropna(subset=['Open Time'])
+        
         return df
 
     except Exception as e:
-        st.error(f"Error parsing PDF: {e}")
+        st.error(f"解析エラー: {e}")
         return pd.DataFrame()
 
-# デモデータ生成（解析失敗時やテスト用）
 def load_demo_data():
-    data = {
-        "Open Time": pd.date_range(start="2025-02-01", periods=50, freq="6H"),
-        "Symbol": ["USDJPY"]*20 + ["XAUUSD"]*15 + ["BTCUSD"]*10 + ["EURUSD"]*5,
-        "Type": ["Buy"]*25 + ["Sell"]*25,
-        "Net Profit": [
-            -286.08, -857.74, -1136.66, 1500.0, 2300.5, -500.0, 450.0, 
-            -100.0, 890.0, -1200.0, 3000.0, -150.0, -150.0, 600.0, 100.0,
-            -2000.0, 500.0, 500.0, -300.0, -300.0, 4000.0, -50.0, -50.0,
-            1200.0, -800.0, 250.0, -400.0, 900.0, 900.0, -100.0, -200.0,
-            5000.0, -2500.0, 150.0, 150.0, -600.0, 800.0, -50.0, -50.0,
-            200.0, 200.0, -1000.0, 300.0, 300.0, -400.0, 500.0, 100.0, -50.0, 20.0, 0.0
-        ]
-    }
-    df = pd.DataFrame(data)
-    # 日付から曜日などを生成
-    df['Day'] = df['Open Time'].dt.day_name()
-    df['Hour'] = df['Open Time'].dt.hour
+    """デモデータ生成"""
+    dates = pd.date_range(end=pd.Timestamp.now(), periods=30, freq='D')
+    df = pd.DataFrame({
+        "Open Time": dates,
+        "Symbol": ["USDJPY", "EURUSD", "GBPUSD", "XAUUSD", "BTCUSD"] * 6,
+        "Type": ["Buy", "Sell"] * 15,
+        "Net Profit": [100, -50, 200, -120, 300, -80, 50, -200, 400, -100] * 3
+    })
     return df
 
 # --- 3. Analytics Logic ---
@@ -132,157 +133,90 @@ def load_demo_data():
 def analyze_data(df):
     if df.empty: return None
     
-    # 基本KPI
     total_trades = len(df)
     total_pnl = df['Net Profit'].sum()
     wins = df[df['Net Profit'] > 0]
     losses = df[df['Net Profit'] <= 0]
     
     win_rate = (len(wins) / total_trades * 100) if total_trades > 0 else 0
-    avg_win = wins['Net Profit'].mean() if not wins.empty else 0
-    avg_loss = losses['Net Profit'].mean() if not losses.empty else 0
+    profit_factor = (wins['Net Profit'].sum() / abs(losses['Net Profit'].sum())) if not losses.empty else float('inf')
     
-    gross_profit = wins['Net Profit'].sum()
-    gross_loss = abs(losses['Net Profit'].sum())
-    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else 0
+    # 累積損益カーブ用
+    df_sorted = df.sort_values('Open Time')
+    df_sorted['Cumulative PnL'] = df_sorted['Net Profit'].cumsum()
     
-    # 累積損益
-    df = df.sort_values('Open Time')
-    df['Cumulative PnL'] = df['Net Profit'].cumsum()
-    
-    # 曜日別分析
+    # 曜日別集計
     df['Day'] = df['Open Time'].dt.day_name()
     day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-    day_pnl = df.groupby('Day')['Net Profit'].sum().reindex(day_order).fillna(0)
-    
+    # 存在しない曜日も0埋めするためにreindex
+    day_pnl = df.groupby('Day')['Net Profit'].sum().reindex(day_order).fillna(0).reset_index()
+
     return {
-        "df": df,
+        "df": df_sorted,
         "total_trades": total_trades,
         "total_pnl": total_pnl,
         "win_rate": win_rate,
         "profit_factor": profit_factor,
-        "avg_win": avg_win,
-        "avg_loss": avg_loss,
         "day_pnl": day_pnl
     }
 
-# --- 4. Main Dashboard UI ---
+# --- 4. Dashboard UI ---
 
 st.title("🛡️ TITAN ANALYTICS")
-st.markdown("SUPERFUNDED TRADING JOURNAL // PDF PARSER")
+st.markdown("SUPERFUNDED JOURNAL // PDF PARSER")
 
-# サイドバー：ファイルアップロード
 with st.sidebar:
-    st.header("📂 DATA SOURCE")
-    uploaded_file = st.file_uploader("Upload Report (PDF)", type="pdf")
-    
-    use_demo = st.checkbox("Use Demo Data (No File)", value=False)
-    
-    st.markdown("---")
-    st.markdown("""
-    **Instructions:**
-    1. Download 'Trading History' as PDF from SuperFunded portal.
-    2. Upload the file here.
-    3. Analyze your weak points.
-    """)
+    st.header("📂 DATA INPUT")
+    uploaded_file = st.file_uploader("Upload PDF Report", type="pdf")
+    use_demo = st.checkbox("Demo Mode", value=False)
+    st.info("SuperFundedの取引履歴PDFをアップロードしてください。")
 
-# データ読み込み処理
 df = pd.DataFrame()
 
-if uploaded_file is not None:
-    with st.spinner("Parsing PDF..."):
+if uploaded_file:
+    with st.spinner("Analyzing PDF..."):
         df = parse_pdf(uploaded_file)
         if df.empty:
-            st.warning("PDF parsing failed or empty. Try Demo Data.")
+            st.error("PDFからデータを読み取れませんでした。ファイル形式を確認するか、デモモードをお試しください。")
 elif use_demo:
     df = load_demo_data()
 
-# 分析実行
 if not df.empty:
-    metrics = analyze_data(df)
+    m = analyze_data(df)
     
-    # --- ROW 1: KPI CARDS ---
+    # KPI Row
     c1, c2, c3, c4 = st.columns(4)
+    p_col = "#00ff99" if m['total_pnl'] >= 0 else "#ff0055"
     
-    pnl_color = "#00ff99" if metrics['total_pnl'] >= 0 else "#ff0055"
-    
-    with c1:
-        st.markdown(f"""
-        <div class="glass-card">
-            <div class="kpi-label">NET PROFIT</div>
-            <div class="kpi-value" style="color:{pnl_color}">${metrics['total_pnl']:,.2f}</div>
-        </div>""", unsafe_allow_html=True)
-        
-    with c2:
-        st.markdown(f"""
-        <div class="glass-card">
-            <div class="kpi-label">WIN RATE</div>
-            <div class="kpi-value">{metrics['win_rate']:.1f}%</div>
-        </div>""", unsafe_allow_html=True)
-        
-    with c3:
-        st.markdown(f"""
-        <div class="glass-card">
-            <div class="kpi-label">PROFIT FACTOR</div>
-            <div class="kpi-value">{metrics['profit_factor']:.2f}</div>
-        </div>""", unsafe_allow_html=True)
-        
-    with c4:
-        st.markdown(f"""
-        <div class="glass-card">
-            <div class="kpi-label">TOTAL TRADES</div>
-            <div class="kpi-value">{metrics['total_trades']}</div>
-        </div>""", unsafe_allow_html=True)
+    c1.markdown(f"<div class='glass-card'><div class='kpi-label'>NET PROFIT</div><div class='kpi-value' style='color:{p_col}'>${m['total_pnl']:,.2f}</div></div>", unsafe_allow_html=True)
+    c2.markdown(f"<div class='glass-card'><div class='kpi-label'>WIN RATE</div><div class='kpi-value'>{m['win_rate']:.1f}%</div></div>", unsafe_allow_html=True)
+    c3.markdown(f"<div class='glass-card'><div class='kpi-label'>PROFIT FACTOR</div><div class='kpi-value'>{m['profit_factor']:.2f}</div></div>", unsafe_allow_html=True)
+    c4.markdown(f"<div class='glass-card'><div class='kpi-label'>TRADES</div><div class='kpi-value'>{m['total_trades']}</div></div>", unsafe_allow_html=True)
 
-    # --- ROW 2: EQUITY CURVE ---
-    st.subheader("📈 Equity Curve (Cumulative PnL)")
-    fig_equity = px.area(metrics['df'], x='Open Time', y='Cumulative PnL')
-    fig_equity.update_traces(line_color='#00e5ff', fillcolor='rgba(0, 229, 255, 0.1)')
-    fig_equity.update_layout(
-        paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-        font=dict(color='#888'), height=350, margin=dict(l=0,r=0,t=0,b=0),
-        xaxis=dict(showgrid=False), yaxis=dict(gridcolor='rgba(255,255,255,0.1)')
-    )
-    st.plotly_chart(fig_equity, use_container_width=True)
+    # Charts
+    st.subheader("📈 Equity Curve")
+    fig_eq = px.area(m['df'], x='Open Time', y='Cumulative PnL')
+    fig_eq.update_traces(line_color='#00e5ff', fillcolor='rgba(0, 229, 255, 0.1)')
+    fig_eq.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color='#888', height=350, margin=dict(t=0,b=0,l=0,r=0))
+    st.plotly_chart(fig_eq, use_container_width=True)
 
-    # --- ROW 3: DEEP DIVE ---
-    col_left, col_right = st.columns(2)
-    
-    with col_left:
-        st.subheader("📅 PnL by Day of Week")
-        # 曜日別損益グラフ
-        day_data = metrics['day_pnl'].reset_index()
-        fig_day = px.bar(day_data, x='Day', y='Net Profit', color='Net Profit',
-                        color_continuous_scale=['#ff0055', '#333', '#00ff99'])
-        fig_day.update_layout(
-            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-            font=dict(color='#888'), height=300, margin=dict(l=0,r=0,t=0,b=0)
-        )
+    c_left, c_right = st.columns(2)
+    with c_left:
+        st.subheader("📅 PnL by Day")
+        fig_day = px.bar(m['day_pnl'], x='Day', y='Net Profit', color='Net Profit', color_continuous_scale=['#ff0055', '#333', '#00ff99'])
+        fig_day.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color='#888', height=300, margin=dict(t=0,b=0,l=0,r=0))
         st.plotly_chart(fig_day, use_container_width=True)
-        st.caption("Tip: Avoid trading on your red days.")
-
-    with col_right:
+    
+    with c_right:
         st.subheader("📊 Symbol Performance")
-        # 通貨ペア別損益
-        sym_pnl = metrics['df'].groupby('Symbol')['Net Profit'].sum().sort_values()
-        fig_sym = px.bar(sym_pnl, x=sym_pnl.values, y=sym_pnl.index, orientation='h',
-                        color=sym_pnl.values, color_continuous_scale=['#ff0055', '#333', '#00ff99'])
-        fig_sym.update_layout(
-            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-            font=dict(color='#888'), height=300, margin=dict(l=0,r=0,t=0,b=0)
-        )
+        sym_pnl = df.groupby('Symbol')['Net Profit'].sum().sort_values()
+        fig_sym = px.bar(x=sym_pnl.values, y=sym_pnl.index, orientation='h', color=sym_pnl.values, color_continuous_scale=['#ff0055', '#333', '#00ff99'])
+        fig_sym.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font_color='#888', height=300, margin=dict(t=0,b=0,l=0,r=0))
         st.plotly_chart(fig_sym, use_container_width=True)
 
-    # --- ROW 4: HISTORY TABLE ---
-    with st.expander("📋 Detailed Trade Log"):
-        st.dataframe(metrics['df'][['Open Time', 'Symbol', 'Type', 'Net Profit']].sort_values('Open Time', ascending=False), use_container_width=True)
+    with st.expander("Show Raw Data"):
+        st.dataframe(m['df'][['Open Time', 'Symbol', 'Type', 'Net Profit']].sort_values('Open Time', ascending=False), use_container_width=True)
 
 else:
     # 待機画面
-    st.info("👆 Upload your SuperFunded PDF report from the sidebar to initialize analysis.")
-    st.markdown("""
-    <div style='text-align: center; margin-top: 50px; opacity: 0.5;'>
-        <h1>WAITING FOR DATA</h1>
-        <p>No external connections. 100% Secure & Local Processing.</p>
-    </div>
-    """, unsafe_allow_html=True)
+    st.markdown("<div style='text-align:center; padding:50px; opacity:0.6'><h1>READY TO ANALYZE</h1><p>Upload your PDF from the sidebar.</p></div>", unsafe_allow_html=True)
